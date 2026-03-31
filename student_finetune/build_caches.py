@@ -104,7 +104,7 @@ def main():
         logger.info(f"Building RADIO cache: {radio_name}")
         logger.info(f"Variant: {radio_cfg['variant']}, Adaptors: {radio_cfg['adaptors']}")
         logger.info(f"{'='*40}")
-        cache_base = f"workspace/output/teacher_cache/{radio_name}"
+        cache_base = f"../workspace/output/teacher_cache/{radio_name}"
         build_radio_summary_cache(
             variant=radio_cfg["variant"],
             adaptor_names=radio_cfg["adaptors"],

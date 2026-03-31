@@ -200,7 +200,7 @@ def test_encode_with_spatial():
 def test_einops_in_pyproject():
     """INFRA-09: einops is listed in pyproject.toml dependencies."""
     from pathlib import Path
-    pyproject = Path(__file__).parent.parent / "pyproject.toml"
+    pyproject = Path(__file__).parent.parent.parent / "pyproject.toml"
     content = pyproject.read_text()
     assert "einops" in content, "einops not found in pyproject.toml"
 

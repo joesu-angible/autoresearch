@@ -206,13 +206,13 @@ class TestGitIgnore:
     """Verify experiment artifacts are git-ignored."""
 
     def test_metrics_json_in_gitignore(self):
-        content = open(".gitignore").read()
+        content = open("../.gitignore").read()
         assert "metrics.json" in content
 
     def test_run_log_in_gitignore(self):
-        content = open(".gitignore").read()
+        content = open("../.gitignore").read()
         assert "run.log" in content
 
     def test_results_tsv_in_gitignore(self):
-        content = open(".gitignore").read()
+        content = open("../.gitignore").read()
         assert "results.tsv" in content

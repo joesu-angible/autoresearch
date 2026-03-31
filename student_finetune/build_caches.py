@@ -20,8 +20,8 @@ from prepare import (
 # All available teachers (non-RADIO + RADIO variants)
 NON_RADIO_TEACHERS = ["trendyol_onnx", "dinov2", "dinov3_ft"]
 RADIO_TEACHERS = {
-    "radio_so400m": {"variant": "so400m", "adaptors": ["backbone", "dino_v3_7b", "siglip2-g"]},
-    "radio_h": {"variant": "h", "adaptors": ["backbone", "dino_v3_7b", "siglip2-g"]},
+    "radio_so400m": {"variant": "so400m", "adaptors": ["backbone", "dino_v3_7b", "siglip2-g", "sam3"]},
+    "radio_h": {"variant": "h", "adaptors": ["backbone", "dino_v3_7b", "siglip2-g", "sam3"]},
 }
 
 MODEL_NAME = "lcnet_100"  # For val dataset transform

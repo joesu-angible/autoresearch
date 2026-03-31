@@ -335,7 +335,7 @@ RADIO_VERSION_MAP: dict[str, str] = {
 # Default adaptors available for C-RADIOv4 models
 # Actual model output keys: "siglip2-g", "dino_v3_7b", "sam3"
 # "backbone" is the no-adaptor case (summary, features) tuple
-RADIO_DEFAULT_ADAPTORS = ["backbone", "dino_v3_7b", "siglip2-g"]
+RADIO_DEFAULT_ADAPTORS = ["backbone", "dino_v3_7b", "siglip2-g", "sam3"]
 
 
 class RADIOTeacher:

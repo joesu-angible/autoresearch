@@ -63,7 +63,7 @@ USE_ARCFACE = True
 ARCFACE_S = 32.0
 ARCFACE_M = 0.30
 ARCFACE_LOSS_WEIGHT = 0.03
-ARCFACE_PHASEOUT_EPOCH = 0     # 0 = disabled
+ARCFACE_PHASEOUT_EPOCH = 5     # Phase out ArcFace at epoch 5, distillation-only for last 5
 ARCFACE_MAX_PER_CLASS = 100
 VAT_WEIGHT = 0.0
 VAT_EPSILON = 8.0

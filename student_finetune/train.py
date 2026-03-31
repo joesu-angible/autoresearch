@@ -85,7 +85,7 @@ SSL_TEMPERATURE = 0.07        # InfoNCE temperature (learnable, this is init val
 SSL_PROJ_DIM = 128            # SSL projection head output dim
 
 # --- Custom LCNet Backbone ---
-LCNET_SCALE = 0.5             # Width multiplier (0.5 matches current lcnet_050)
+LCNET_SCALE = 1.0             # Width multiplier (1.0 = full LCNet, 2x capacity)
 SE_START_BLOCK = 10           # Block index where SE begins (0-indexed, 13 total blocks)
 SE_REDUCTION = 0.25           # SE squeeze ratio
 ACTIVATION = "h_swish"        # "h_swish" | "relu" | "gelu"

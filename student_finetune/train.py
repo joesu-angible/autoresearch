@@ -94,8 +94,8 @@ USE_PRETRAINED = True          # Load timm pretrained weights when scale matches
 
 # --- RADIO Teacher Configuration ---
 RADIO_VARIANT = "so400m"              # "so400m" or "h" (C-RADIOv4 variant)
-RADIO_ADAPTORS = ["backbone"]          # subset of ["backbone", "dino_v3", "siglip2-g"]
-RADIO_CACHE_BASE = "workspace/output/teacher_cache"
+RADIO_ADAPTORS = ["backbone"]          # subset of ["backbone", "dino_v3_7b", "siglip2-g"]
+RADIO_CACHE_BASE = "/data/training/reid/workspace/output/teacher_cache"
 
 # --- Spatial Distillation ---
 SPATIAL_DISTILL_WEIGHT = 0.0   # 0.0 = disabled; agent sets positive value to enable spatial distillation from RADIO

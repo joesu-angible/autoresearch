@@ -248,7 +248,17 @@ class DINOv2Teacher:
         batch = torch.stack(tensors).to(self.device)
         with torch.amp.autocast(self.device):
             out = self.model(batch)
-        emb = out.last_hidden_state[:, 0, :]  # CLS token only, shape (B, 256)
+        # Handle both 3D (B, seq_len, D) and 2D (B, D) model outputs
+        if hasattr(out, "last_hidden_state"):
+            hidden = out.last_hidden_state
+            emb = hidden[:, 0, :] if hidden.ndim == 3 else hidden
+        elif hasattr(out, "pooler_output") and out.pooler_output is not None:
+            emb = out.pooler_output
+        else:
+            # Fallback: treat raw output as embeddings
+            emb = out[0] if isinstance(out, (tuple, list)) else out
+            if emb.ndim == 3:
+                emb = emb[:, 0, :]
         return [e.cpu().numpy().flatten() for e in emb]
 
 
@@ -323,7 +333,9 @@ RADIO_VERSION_MAP: dict[str, str] = {
 }
 
 # Default adaptors available for C-RADIOv4 models
-RADIO_DEFAULT_ADAPTORS = ["backbone", "dino_v3", "siglip2-g"]
+# Actual model output keys: "siglip2-g", "dino_v3_7b", "sam3"
+# "backbone" is the no-adaptor case (summary, features) tuple
+RADIO_DEFAULT_ADAPTORS = ["backbone", "dino_v3_7b", "siglip2-g"]
 
 
 class RADIOTeacher:
@@ -740,25 +752,25 @@ TEACHER_REGISTRY: dict[str, dict] = {
     "dinov2": {
         "class": DINOv2Teacher,
         "embedding_dim": 256,
-        "cache_dir": "../workspace/output/teacher_cache/dinov2",
+        "cache_dir": "/data/training/reid/workspace/output/teacher_cache/dinov2",
         "init_kwargs": {"model_name": "Trendyol/trendyol-dino-v2-ecommerce-256d"},
     },
     "dinov3_ft": {
         "class": DINOv3FTTeacher,
         "embedding_dim": 1280,
-        "cache_dir": "../workspace/output/teacher_cache/dinov3_ft",
+        "cache_dir": "/data/training/reid/workspace/output/teacher_cache/dinov3_ft",
         "init_kwargs": {"adapter_path": "../dino_finetune/output/best_adapter"},
     },
     "radio_so400m": {
         "class": RADIOTeacher,
         "embedding_dim": None,  # determined at init time -- read from metadata.json
-        "cache_dir": "../workspace/output/teacher_cache/radio_so400m",
+        "cache_dir": "/data/training/reid/workspace/output/teacher_cache/radio_so400m",
         "init_kwargs": {"variant": "so400m"},
     },
     "radio_h": {
         "class": RADIOTeacher,
         "embedding_dim": None,  # determined at init time -- read from metadata.json
-        "cache_dir": "../workspace/output/teacher_cache/radio_h",
+        "cache_dir": "/data/training/reid/workspace/output/teacher_cache/radio_h",
         "init_kwargs": {"variant": "h"},
     },
 }

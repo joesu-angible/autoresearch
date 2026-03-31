@@ -69,7 +69,7 @@ VAT_WEIGHT = 0.0
 VAT_EPSILON = 8.0
 SEP_WEIGHT = 1.0
 UNFREEZE_EPOCH = 0             # 0 = unfreeze from start (per D-02)
-BACKBONE_LR_MULT = 0.5        # Backbone LR = LR * this (train backbone more with strong teacher)
+BACKBONE_LR_MULT = 1.0        # Backbone LR = LR * this (full backbone training)
 # Teacher selection (per D-03, D-05)
 TEACHER = "dinov3_ft"  # Single teacher mode -- trying our fine-tuned DINOv3 (1280d)
 # Multi-teacher mode: set TEACHERS to enable, overrides TEACHER

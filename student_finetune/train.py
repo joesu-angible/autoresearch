@@ -67,7 +67,7 @@ ARCFACE_PHASEOUT_EPOCH = 3     # Phase out ArcFace at epoch 3, distillation-only
 ARCFACE_MAX_PER_CLASS = 200
 VAT_WEIGHT = 0.0
 VAT_EPSILON = 8.0
-SEP_WEIGHT = 1.0
+SEP_WEIGHT = 0.0
 UNFREEZE_EPOCH = 0             # 0 = unfreeze from start (per D-02)
 BACKBONE_LR_MULT = 1.0        # Backbone LR = LR * this (full backbone training)
 # Teacher selection (per D-03, D-05)

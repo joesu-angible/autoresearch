@@ -119,9 +119,10 @@ None yet.
 | 260329-ux2 | Add early stopping and production training config | 2026-03-29 | d3880a1 | [260329-ux2](./quick/260329-ux2-add-early-stopping-and-production-traini/) |
 | 260330-e2u | Fix early stopping to prevent saving collapsed adapters | 2026-03-30 | 8a436a7 | [260330-e2u](./quick/260330-e2u-fix-early-stopping-to-prevent-saving-col/) |
 | 260330-e9t | Add best/last adapter saving and crash resume | 2026-03-30 | 7d9e942 | [260330-e9t](./quick/260330-e9t-add-best-last-adapter-saving-and-crash-r/) |
+| 260331-lq1 | Restructure project: move student distillation into student_finetune/ | 2026-03-31 | 3c11fc1 | [260331-lq1](./quick/260331-lq1-restructure-project-move-student-distill/) |
 
 ## Session Continuity
 
-Last activity: 2026-03-30 - Completed quick task 260330-e9t: Add best/last adapter + crash resume
-Stopped at: Completed 09-03-PLAN.md
+Last activity: 2026-03-31 - Completed quick task 260331-lq1: Restructure project into student_finetune/
+Stopped at: Completed 260331-lq1-PLAN.md
 Resume file: None

@@ -51,7 +51,7 @@ from torchvision import transforms
 # ============================================================
 MODEL_NAME = "hf-hub:timm/lcnet_050.ra2_in1k"
 BATCH_SIZE = 64
-ARCFACE_BATCH_SIZE = 128
+ARCFACE_BATCH_SIZE = 256
 LR = 8e-3
 WEIGHT_DECAY = 1e-3
 NUM_WORKERS = 16

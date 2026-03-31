@@ -50,7 +50,7 @@ from torchvision import transforms
 # EXPERIMENT VARIABLES (agent edits these)
 # ============================================================
 MODEL_NAME = "hf-hub:timm/lcnet_050.ra2_in1k"
-BATCH_SIZE = 256
+BATCH_SIZE = 128
 ARCFACE_BATCH_SIZE = 128
 LR = 8e-3
 WEIGHT_DECAY = 1e-5

@@ -71,7 +71,7 @@ SEP_WEIGHT = 1.0
 UNFREEZE_EPOCH = 0             # 0 = unfreeze from start (per D-02)
 BACKBONE_LR_MULT = 0.1        # Backbone LR = LR * this
 # Teacher selection (per D-03, D-05)
-TEACHER = "trendyol_onnx"  # Single teacher mode (default, backward compatible)
+TEACHER = "dinov3_ft"  # Single teacher mode -- trying our fine-tuned DINOv3 (1280d)
 # Multi-teacher mode: set TEACHERS to enable, overrides TEACHER
 # Example: TEACHERS = {"trendyol_onnx": 0.5, "dinov2": 0.5}
 TEACHERS: dict[str, float] | None = None

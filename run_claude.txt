@@ -1,0 +1,3 @@
+tmux new -s autoresearch
+cd /home/whiskey/workspace/project/central/v2/training/autoresearch
+claude --print --dangerously-skip-permissions "Read program.md for your full instructions. You are starting an autonomous experiment run. Read results.tsv for history, then begin the experiment loop. NEVER stop."

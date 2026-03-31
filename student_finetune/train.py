@@ -1915,7 +1915,10 @@ def main() -> None:
     if swa_state is not None and swa_count > 0:
         logger.info(f"Applying SWA weights (averaged over {swa_count} epochs)...")
         for k in swa_state:
-            swa_state[k] /= swa_count
+            if swa_state[k].is_floating_point():
+                swa_state[k] /= swa_count
+            else:
+                swa_state[k] //= swa_count
         model.load_state_dict(swa_state)
 
         # Re-evaluate with SWA weights

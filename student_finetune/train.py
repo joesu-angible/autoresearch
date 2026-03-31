@@ -667,7 +667,6 @@ def build_train_transform(image_size: int) -> transforms.Compose:
     return transforms.Compose([
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.RandomVerticalFlip(p=0.5),
-        transforms.RandomApply([transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2, hue=0.05)], p=0.4),
         PadToSquare(),
         transforms.Resize((image_size, image_size)),
         transforms.ToTensor(),

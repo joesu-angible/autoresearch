@@ -75,7 +75,7 @@ TEACHER = "trendyol_onnx"  # Single teacher mode (default, backward compatible)
 # Multi-teacher mode: set TEACHERS to enable, overrides TEACHER
 # Example: TEACHERS = {"trendyol_onnx": 0.5, "dinov2": 0.5}
 TEACHERS: dict[str, float] | None = None
-OUTPUT_DIR = "workspace/output/distill_trendyol_lcnet050_retail"
+OUTPUT_DIR = "/data/training/reid/workspace/output/distill_trendyol_lcnet050_retail"
 RETRIEVAL_MAX_SAMPLES = 5000
 RETRIEVAL_TOPK = 5
 

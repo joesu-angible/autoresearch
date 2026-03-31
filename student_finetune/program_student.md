@@ -112,7 +112,7 @@ TEACHERS = {
 | Constant | Default | Options | What It Controls |
 |----------|---------|---------|------------------|
 | `RADIO_VARIANT` | `"so400m"` | `"so400m"`, `"h"` | C-RADIOv4 model size |
-| `RADIO_ADAPTORS` | `["backbone"]` | subset of `["backbone", "dino_v3", "siglip2-g"]` | Which RADIO adaptors to distill from |
+| `RADIO_ADAPTORS` | `["backbone"]` | subset of `["backbone", "dino_v3_7b", "siglip2-g", "sam3"]` | Which RADIO adaptors to distill from |
 | `SPATIAL_DISTILL_WEIGHT` | 0.0 | [0.0, 1.0] | Spatial (per-patch) distillation from RADIO. 0 = disabled. |
 
 ### Advanced Training Techniques

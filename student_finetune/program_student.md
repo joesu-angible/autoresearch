@@ -2,6 +2,16 @@
 
 This is the autonomous experimentation guide for LCNet student model training via knowledge distillation from multiple teacher models. You are training a lightweight LCNet backbone (256-dimensional embeddings) distilled from large teacher models (TrendyolONNX, DINOv2, DINOv3-FT, C-RADIO). Your goal: maximize recall@1 on the validation set.
 
+## Agent Configuration
+
+This experiment loop should be run by a specialized **AI Engineer agent** (`voltagent-data-ai:ai-engineer`). The agent brings deep knowledge of:
+- Knowledge distillation techniques and loss function design
+- Model architecture optimization under deployment constraints
+- Hyperparameter search strategies and experiment design
+- Reading and interpreting training metrics to form hypotheses
+
+The agent should treat this as a research project, not a checklist. Form hypotheses, test them, analyze results, and adapt strategy based on what the data reveals.
+
 ## Setup
 
 To set up a new student distillation experiment run, work with the user to:
@@ -275,9 +285,12 @@ It also writes `metrics.json` with full results.
 Log every experiment to `student_finetune/results.tsv` (tab-separated):
 
 ```
-commit	combined_metric	recall_1	recall_5	mean_cosine	distill_loss	peak_vram_mb	status	description
-a1b2c3d	0.654321	0.432100	0.567800	0.876543	0.012345	18432.1	keep	baseline
+commit	combined_metric	recall_1	recall_5	mean_cosine	distill_loss	peak_vram_mb	status	description	next_step
+a1b2c3d	0.654321	0.432100	0.567800	0.876543	0.012345	18432.1	keep	baseline	try dinov3_ft teacher (stronger signal)
+b2c3d4e	0.712345	0.860200	0.900000	0.564500	0.298000	980.2	keep	dinov3_ft teacher	try multi-teacher 0.5/0.5 blend
 ```
+
+The `next_step` column records your reasoning for the NEXT experiment — what you plan to try and why. This creates a decision trail that helps you (and future runs) understand the experimental logic.
 
 ## Crash Handling
 
@@ -298,9 +311,19 @@ a1b2c3d	0.654321	0.432100	0.567800	0.876543	0.012345	18432.1	keep	baseline
 
 Once the experiment loop has begun, do NOT pause to ask the human if you should continue. The human might be asleep. You are autonomous.
 
-If you run out of ideas:
-1. Re-read results.tsv for patterns
-2. Re-read train.py line by line for overlooked opportunities
-3. Re-read this program_student.md from the top
-4. Try combining the best settings from different experiments
-5. Try radical changes (different teacher, SE/kernel/activation architecture tweaks -- but NEVER exceed LCNET_SCALE=0.5)
+If you run out of ideas from the priority list:
+
+1. **Analyze results.tsv deeply**: Look for patterns across ALL experiments. Which metric is the bottleneck (recall vs cosine)? Which changes had the biggest delta? Are there unexplored interactions between variables?
+2. **Hypothesize from data**: If recall is high but cosine is low, the model retrieves well but embeddings aren't tight — try stronger distillation weight or different loss. If cosine is high but recall is low, embeddings are similar but not discriminative — try ArcFace or harder negatives.
+3. **Search for novel approaches**: Use WebSearch to find recent papers on knowledge distillation, lightweight model training, or metric learning improvements. Look for techniques like:
+   - Progressive distillation (start with easy teacher, switch to hard)
+   - Curriculum learning (easy samples first)
+   - Label smoothing or soft targets
+   - Attention transfer from teacher to student
+   - Feature-based distillation (intermediate layers, not just final embedding)
+4. **Combine best settings**: Take the top-3 individual improvements and try 2-way and 3-way combinations.
+5. **Try contrarian experiments**: If all improvements went in one direction (e.g., softer loss), try the opposite extreme to verify the trend isn't local.
+6. **Ablation studies**: Remove one component at a time from the current best to understand which parts matter most.
+7. **Re-read train.py line by line**: Look for overlooked constants, unused features, or code paths that could be leveraged.
+
+Remember: you are an autonomous AI researcher. Do not just follow a checklist — THINK about what the data is telling you and form hypotheses. The best experiments come from understanding WHY something worked, not just WHAT worked.

@@ -52,7 +52,7 @@ from torchvision import transforms
 MODEL_NAME = "hf-hub:timm/lcnet_050.ra2_in1k"
 BATCH_SIZE = 256
 ARCFACE_BATCH_SIZE = 128
-LR = 5e-3
+LR = 2e-3
 WEIGHT_DECAY = 1e-5
 NUM_WORKERS = 16
 SEED = 42
@@ -300,9 +300,9 @@ class LCNet(nn.Module):
         self.gap = nn.AdaptiveAvgPool2d(1)
 
         # Projection head(s)
-        # Multi-teacher mode (per D-06): per-teacher projection heads
+        # Per-teacher projection heads for distillation (handles dim mismatch)
         self.proj_heads: nn.ModuleDict | None = None
-        if teacher_dims is not None and len(teacher_dims) > 1:
+        if teacher_dims is not None and len(teacher_dims) >= 1:
             self.proj_heads = nn.ModuleDict({
                 t_name: nn.Sequential(
                     nn.Linear(1280, t_dim),
@@ -310,11 +310,20 @@ class LCNet(nn.Module):
                 )
                 for t_name, t_dim in teacher_dims.items()
             })
-            # self.proj points to first teacher's head for encode() compatibility
+            # self.proj is always embedding_dim for encode() output
             first_name = next(iter(teacher_dims))
-            self.proj = self.proj_heads[first_name]
+            first_dim = teacher_dims[first_name]
+            if len(teacher_dims) == 1 and first_dim == embedding_dim:
+                # Single teacher with matching dim -- share projection
+                self.proj = self.proj_heads[first_name]
+            else:
+                # Teacher dim(s) differ from embedding_dim -- separate encode projection
+                self.proj = nn.Sequential(
+                    nn.Linear(1280, embedding_dim),
+                    nn.BatchNorm1d(embedding_dim),
+                )
         else:
-            # Single-teacher mode (backward compatible)
+            # No teacher_dims provided (backward compatible)
             self.proj = nn.Sequential(
                 nn.Linear(1280, embedding_dim),
                 nn.BatchNorm1d(embedding_dim),
@@ -1498,28 +1507,17 @@ def main() -> None:
     if radio_teacher_names:
         logger.info(f"RADIO teachers use cached embeddings: variant={RADIO_VARIANT}, adaptors={RADIO_ADAPTORS}")
 
-    # Model
-    if len(teacher_names) > 1:
-        model = LCNet(
-            scale=LCNET_SCALE,
-            se_start_block=SE_START_BLOCK,
-            se_reduction=SE_REDUCTION,
-            activation=ACTIVATION,
-            kernel_sizes=KERNEL_SIZES,
-            embedding_dim=EMBEDDING_DIM,
-            device=str(device),
-            teacher_dims=teacher_dims,
-        ).to(device)
-    else:
-        model = LCNet(
-            scale=LCNET_SCALE,
-            se_start_block=SE_START_BLOCK,
-            se_reduction=SE_REDUCTION,
-            activation=ACTIVATION,
-            kernel_sizes=KERNEL_SIZES,
-            embedding_dim=EMBEDDING_DIM,
-            device=str(device),
-        ).to(device)
+    # Model -- always pass teacher_dims so proj_heads handle dimension mismatch
+    model = LCNet(
+        scale=LCNET_SCALE,
+        se_start_block=SE_START_BLOCK,
+        se_reduction=SE_REDUCTION,
+        activation=ACTIVATION,
+        kernel_sizes=KERNEL_SIZES,
+        embedding_dim=EMBEDDING_DIM,
+        device=str(device),
+        teacher_dims=teacher_dims,
+    ).to(device)
 
     if USE_PRETRAINED:
         load_pretrained_lcnet(model, LCNET_SCALE)
@@ -1932,7 +1930,12 @@ def main() -> None:
                 for images, labels, paths in distill_loader:
                     images = images.to(device, non_blocking=True)
                     teacher_emb = load_teacher_embeddings(paths, teachers_dict[default_t_name], device, default_t_cache, teacher_name=default_t_name)
-                    student_emb = model.encode(images)
+                    # Use proj_head for teacher dim if available, else encode()
+                    if hasattr(model, 'proj_heads') and model.proj_heads is not None and default_t_name in model.proj_heads:
+                        backbone_feat = model.forward_backbone(images)
+                        student_emb = functional.normalize(model.proj_heads[default_t_name](backbone_feat), p=2, dim=1)
+                    else:
+                        student_emb = model.encode(images)
                     teacher_emb = teacher_emb.to(device=device, dtype=student_emb.dtype)
                     cos = functional.cosine_similarity(student_emb, teacher_emb, dim=1)
                     cos_sum += cos.sum().item()

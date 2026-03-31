@@ -39,6 +39,8 @@ These are absolute rules. Violating any one invalidates all experiments.
 
 5. **NEVER set BATCH_SIZE > 512** -- physical batch size is limited by VRAM on RTX 4090 (24GB). Distillation batch of 256 is default and safe.
 
+6. **NEVER increase LCNET_SCALE above 0.5** -- the student model must deploy on edge devices. The baseline `timm/lcnet_050.ra2_in1k` (~1.88M params, ~39M FLOPs at 224x224) is the hard ceiling. Any architecture change that pushes total params or FLOPs above the lcnet_050 baseline is forbidden. This means LCNET_SCALE=1.0 and LCNET_SCALE=1.5 are permanently off-limits.
+
 ## Search Space -- Experiment Variables
 
 These are all the tunable constants at the top of `train.py`. Read the file to confirm exact variable names before editing.
@@ -92,7 +94,7 @@ TEACHERS = {
 
 | Constant | Default | Safe Range | What It Controls |
 |----------|---------|------------|------------------|
-| `LCNET_SCALE` | 0.5 | [0.35, 1.5] | Width multiplier. 0.5 = lcnet_050, 1.0 = lcnet_100. More = larger model. |
+| `LCNET_SCALE` | 0.5 | [0.35, 0.5] | Width multiplier. **HARD LIMIT: never exceed 0.5** (edge deployment constraint). 0.35 = smaller/faster. |
 | `SE_START_BLOCK` | 10 | [0, 12] | Block index where Squeeze-and-Excite begins (0-indexed, 13 total blocks). Lower = more SE. |
 | `SE_REDUCTION` | 0.25 | [0.125, 0.5] | SE squeeze ratio. Lower = more capacity. |
 | `ACTIVATION` | `"h_swish"` | `"h_swish"`, `"relu"`, `"gelu"` | Activation function for LCNet blocks. |
@@ -169,16 +171,35 @@ ArcFace adds explicit class boundaries. Test the balance.
 - `ARCFACE_M = 0.7` (harder margin)
 - `ARCFACE_PHASEOUT_EPOCH = 5` (ArcFace first half, then distillation only)
 
-### Priority 4: LCNet Architecture
+### Priority 4: LCNet Architecture (Iso-Parameter Experiments)
 
-Test if model capacity matters.
+Explore architecture changes that improve quality WITHOUT increasing params/FLOPs beyond the lcnet_050 baseline (~1.88M params, ~39M FLOPs at 224x224). **LCNET_SCALE must NEVER exceed 0.5.**
 
-**Suggested experiments:**
-- `LCNET_SCALE = 0.35` (tiny -- very fast inference)
-- `LCNET_SCALE = 1.0` (full LCNet -- 2x larger)
-- `SE_START_BLOCK = 6` (more SE modules)
-- `ACTIVATION = "gelu"` (different activation)
-- Wider kernels: `KERNEL_SIZES = [5,5,5,5,5,5,5,5,5,5,5,5,5]`
+**Suggested experiments (iso-parameter or parameter-reducing):**
+
+1. **Smaller model (reduces params):**
+   - `LCNET_SCALE = 0.35` -- ~0.9M params (~52% fewer). Tests whether a smaller model with better training signal can match lcnet_050.
+
+2. **SE block placement (minimal param change):**
+   - `SE_START_BLOCK = 6` -- adds SE to blocks 6-12 instead of 10-12. At scale=0.5, this adds ~25K params (SE on 128-ch blocks: 2 x Conv1x1 with reduction=0.25 = ~8.4K per block). Total stays well under 1.88M.
+   - `SE_START_BLOCK = 0` -- SE on all 13 blocks. Adds ~35K total params (early blocks have 8-32 channels, so SE overhead is tiny: <1K per block). Still under baseline.
+   - `SE_START_BLOCK = 8` -- SE on blocks 8-12 only. Moderate SE coverage, ~17K extra params.
+
+3. **SE squeeze ratio (minimal param change):**
+   - `SE_REDUCTION = 0.125` -- halves SE mid-channels, removes ~25K params from SE blocks. Tests if SE with less capacity still helps.
+   - `SE_REDUCTION = 0.5` -- doubles SE mid-channels, adds ~25K params. More SE capacity, still well under baseline ceiling.
+
+4. **Activation function (zero param change, different compute profile):**
+   - `ACTIVATION = "gelu"` -- smoother gradient flow than h_swish. Same params, slightly higher FLOPs (~5% due to exp/erf), still well under baseline.
+   - `ACTIVATION = "relu"` -- fastest activation, fewer FLOPs than h_swish. Tests if simpler activation is sufficient with good distillation.
+
+5. **Kernel sizes (zero param change, modest FLOP change):**
+   - `KERNEL_SIZES = [5,5,5,5,5,5,5,5,5,5,5,5,5]` -- all 5x5 depthwise kernels. Adds ~0 params (depthwise conv weights scale with kernel area but are tiny: +16 weights per channel per block). FLOPs increase ~2.7x on depthwise layers, but depthwise is <5% of total FLOPs, so net impact is <15% total FLOP increase. Still under baseline.
+   - `KERNEL_SIZES = [3,3,3,3,3,3,3,3,3,5,5,5,5]` -- larger kernels only in later stages where receptive field matters most. Negligible FLOP/param change.
+   - `KERNEL_SIZES = [5,5,5,3,3,3,3,3,3,5,5,5,5]` -- larger kernels in early + late stages (capture both low-level texture and high-level structure).
+
+6. **Combined iso-param experiments (after individual winners identified):**
+   - Best SE_START_BLOCK + best ACTIVATION + best KERNEL_SIZES -- combine winners from above.
 
 ### Priority 5: Advanced Techniques
 
@@ -282,4 +303,4 @@ If you run out of ideas:
 2. Re-read train.py line by line for overlooked opportunities
 3. Re-read this program_student.md from the top
 4. Try combining the best settings from different experiments
-5. Try radical changes (different teacher, different architecture scale)
+5. Try radical changes (different teacher, SE/kernel/activation architecture tweaks -- but NEVER exceed LCNET_SCALE=0.5)

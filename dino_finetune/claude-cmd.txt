@@ -1,1 +1,0 @@
-"Read program_dino.md for your full instructions. You are starting an autonomous experiment run. Read results.tsv for history, then begin the experiment loop. NEVER stop."

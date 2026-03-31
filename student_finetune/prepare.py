@@ -261,7 +261,7 @@ class DINOv3FTTeacher:
 
     embedding_dim = 1280
 
-    def __init__(self, adapter_path: str = "dino_finetune/output/best_adapter", device: str = "cuda") -> None:
+    def __init__(self, adapter_path: str = "../dino_finetune/output/best_adapter", device: str = "cuda") -> None:
         import os
         from peft import PeftModel
         from transformers import AutoModel, AutoImageProcessor
@@ -371,7 +371,7 @@ class RADIOTeacher:
 
         logger.info(f"RADIOTeacher: loading {version} with adaptors={adaptor_names}...")
         self.model = torch.hub.load(
-            "RADIO",
+            "../RADIO",
             "radio_model",
             source="local",
             version=version,
@@ -740,25 +740,25 @@ TEACHER_REGISTRY: dict[str, dict] = {
     "dinov2": {
         "class": DINOv2Teacher,
         "embedding_dim": 256,
-        "cache_dir": "workspace/output/teacher_cache/dinov2",
+        "cache_dir": "../workspace/output/teacher_cache/dinov2",
         "init_kwargs": {"model_name": "Trendyol/trendyol-dino-v2-ecommerce-256d"},
     },
     "dinov3_ft": {
         "class": DINOv3FTTeacher,
         "embedding_dim": 1280,
-        "cache_dir": "workspace/output/teacher_cache/dinov3_ft",
-        "init_kwargs": {"adapter_path": "dino_finetune/output/best_adapter"},
+        "cache_dir": "../workspace/output/teacher_cache/dinov3_ft",
+        "init_kwargs": {"adapter_path": "../dino_finetune/output/best_adapter"},
     },
     "radio_so400m": {
         "class": RADIOTeacher,
         "embedding_dim": None,  # determined at init time -- read from metadata.json
-        "cache_dir": "workspace/output/teacher_cache/radio_so400m",
+        "cache_dir": "../workspace/output/teacher_cache/radio_so400m",
         "init_kwargs": {"variant": "so400m"},
     },
     "radio_h": {
         "class": RADIOTeacher,
         "embedding_dim": None,  # determined at init time -- read from metadata.json
-        "cache_dir": "workspace/output/teacher_cache/radio_h",
+        "cache_dir": "../workspace/output/teacher_cache/radio_h",
         "init_kwargs": {"variant": "h"},
     },
 }

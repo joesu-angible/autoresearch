@@ -143,7 +143,7 @@ TEACHERS = {
 
 ## Experiment Strategy (Prioritized)
 
-Work through these priorities in order. Exhaust each priority level before moving to the next.
+Work through these priorities roughly in order, but use your judgment — if you see an obvious opportunity at a lower priority, take it. Data augmentation (Priority 3) is especially impactful and should be explored early alongside teacher selection and LR tuning.
 
 ### Priority 1: Teacher Selection (MOST IMPACTFUL)
 
@@ -170,7 +170,11 @@ After finding the best teacher, tune LR and batch size.
 - BACKBONE_LR_MULT=0.01 (freeze backbone nearly)
 - BACKBONE_LR_MULT=0.5 (train backbone more)
 
-### Priority 3: ArcFace Tuning
+### Priority 3: Data Augmentation (HIGH IMPACT — explore creatively)
+
+See full section below (after Priority 6 numbering — it's listed as Priority 3 in execution order).
+
+### Priority 4: ArcFace Tuning
 
 ArcFace adds explicit class boundaries. Test the balance.
 
@@ -181,7 +185,7 @@ ArcFace adds explicit class boundaries. Test the balance.
 - `ARCFACE_M = 0.7` (harder margin)
 - `ARCFACE_PHASEOUT_EPOCH = 5` (ArcFace first half, then distillation only)
 
-### Priority 4: LCNet Architecture (Iso-Parameter Experiments)
+### Priority 5: LCNet Architecture (Iso-Parameter Experiments)
 
 Explore architecture changes that improve quality WITHOUT increasing params/FLOPs beyond the lcnet_050 baseline (~1.88M params, ~39M FLOPs at 224x224). **LCNET_SCALE must NEVER exceed 0.5.**
 
@@ -211,7 +215,7 @@ Explore architecture changes that improve quality WITHOUT increasing params/FLOP
 6. **Combined iso-param experiments (after individual winners identified):**
    - Best SE_START_BLOCK + best ACTIVATION + best KERNEL_SIZES -- combine winners from above.
 
-### Priority 5: Advanced Techniques
+### Priority 6: Advanced Techniques
 
 Only try these after Priorities 1-4 are exhausted.
 
@@ -223,13 +227,56 @@ Only try these after Priorities 1-4 are exhausted.
 - `ENABLE_ADAPTOR_MLP_V2 = True` (enhanced projection heads)
 - `VAT_WEIGHT = 0.01` (adversarial regularization)
 
-### Priority 6: Data Augmentation
+### Priority 3 (Full Section): Data Augmentation (HIGH IMPACT — explore creatively)
 
-**Suggested experiments:**
-- `QUALITY_DEGRADATION_PROB = 0.0` (no degradation)
-- `QUALITY_DEGRADATION_PROB = 0.8` (heavy degradation)
-- `DROP_HARD_RATIO = 0.0` (keep all negatives)
-- `DROP_HARD_RATIO = 0.4` (drop more hard negatives)
+Data augmentation is critical for ReID because product images in production vary wildly in quality, angle, lighting, and occlusion. The current augmentations in `build_train_transform()` are basic. **You are encouraged to go beyond the existing transforms and invent new ones.**
+
+**Current augmentation pipeline** (in `train.py` `build_train_transform()`):
+- RandomHorizontalFlip(p=0.5)
+- RandomVerticalFlip(p=0.5)
+- ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2, hue=0.05) @ p=0.4
+- PadToSquare + Resize
+- Normalize
+
+**Also**: `RandomQualityDegradation` (downsample + JPEG compression) applied before transforms via `QUALITY_DEGRADATION_PROB`.
+
+**Suggested experiments (starting points — do NOT limit yourself to these):**
+
+1. **Quality degradation tuning:**
+   - `QUALITY_DEGRADATION_PROB = 0.0` (disable — see how much it helps/hurts)
+   - `QUALITY_DEGRADATION_PROB = 0.8` (heavy — simulate bad cameras)
+   - Modify `RandomQualityDegradation` to also add Gaussian noise, motion blur, or defocus blur
+
+2. **Geometric augmentations:**
+   - Add `RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.8, 1.2))` — products may be rotated/shifted on shelves
+   - Add `RandomPerspective(distortion_scale=0.2, p=0.3)` — simulate different camera angles
+   - `RandomResizedCrop` instead of `Resize` — force the model to learn from partial views
+
+3. **Color/appearance augmentations:**
+   - Stronger ColorJitter — `brightness=0.5, contrast=0.5, saturation=0.4, hue=0.1`
+   - Add `RandomGrayscale(p=0.1)` — force model to not rely on color alone
+   - Add `GaussianBlur(kernel_size=5, sigma=(0.1, 2.0))` — simulate out-of-focus
+   - Random channel shuffle or channel dropout
+
+4. **Occlusion/masking augmentations:**
+   - `RandomErasing(p=0.3, scale=(0.02, 0.2))` — simulate partial occlusion by other products
+   - Cutout/CutMix style augmentation — mask random patches
+   - GridMask — structured occlusion pattern
+
+5. **ReID-specific augmentations (implement yourself in train.py):**
+   - **Random background swap**: Replace background with random color/noise (products on different shelves)
+   - **Product-aware crop**: Tight crop around the product, forcing the model to learn fine-grained features
+   - **Multi-scale training**: Randomly resize input to different scales (192, 224, 256) to learn scale-invariant features
+   - **Mixup for embeddings**: Interpolate between teacher embeddings of same-class images as soft targets
+
+6. **Hard negative augmentation:**
+   - `DROP_HARD_RATIO = 0.0` (keep all negatives — more learning signal)
+   - `DROP_HARD_RATIO = 0.4` (drop more hard negatives — less noisy gradients)
+   - Implement online hard negative mining — within each batch, weight loss by similarity rank
+
+**How to add new augmentations**: Edit `build_train_transform()` in `train.py`. You can add any transform from `torchvision.transforms` or implement custom transforms as classes with `__call__(self, img) -> img`. Keep augmentations as PIL-level transforms (before ToTensor).
+
+**Philosophy**: Think about what real production images look like vs training images. Any augmentation that bridges that gap is worth trying. Search for recent papers on product/retail augmentation if stuck.
 
 ## Workflow -- The Experiment Loop
 

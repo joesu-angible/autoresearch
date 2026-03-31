@@ -52,8 +52,22 @@ def collect_all_image_paths() -> list[str]:
 
     # Deduplicate
     all_paths = list(dict.fromkeys(all_paths))
-    logger.info(f"Total unique image paths: {len(all_paths)}")
-    return all_paths
+    logger.info(f"Total unique image paths (before filter): {len(all_paths)}")
+
+    # Filter out unreadable images to prevent crashes during cache building
+    valid_paths = []
+    bad_count = 0
+    for p in all_paths:
+        try:
+            from PIL import Image
+            Image.open(p).verify()
+            valid_paths.append(p)
+        except Exception:
+            bad_count += 1
+    if bad_count:
+        logger.warning(f"Filtered {bad_count} unreadable images")
+    logger.info(f"Valid image paths: {len(valid_paths)}")
+    return valid_paths
 
 
 def main():

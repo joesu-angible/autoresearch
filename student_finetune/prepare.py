@@ -867,7 +867,11 @@ class SampledImageFolder(Dataset):
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, int] | tuple[torch.Tensor, int, str]:
         path, target = self.samples[index]
-        img = Image.open(path).convert("RGB")
+        try:
+            img = Image.open(path).convert("RGB")
+        except Exception:
+            path, target = random.choice(self.samples)
+            img = Image.open(path).convert("RGB")
         if self.transform is not None:
             img = self.transform(img)
         if self.return_path:
@@ -1301,10 +1305,21 @@ def load_teacher_embeddings(
                 continue
         uncached_indices.append(i)
 
-    # Phase 2: batch inference for uncached images
+    # Phase 2: batch inference for uncached images (skip unreadable)
     if uncached_indices:
-        pil_images = [Image.open(image_paths[i]).convert("RGB") for i in uncached_indices]
+        valid_indices = []
+        pil_images = []
+        for i in uncached_indices:
+            try:
+                img = Image.open(image_paths[i]).convert("RGB")
+                pil_images.append(img)
+                valid_indices.append(i)
+            except Exception as e:
+                logger.warning(f"Skipping unreadable image: {image_paths[i]} ({e})")
+        if not pil_images:
+            return embeddings
         emb_list = teacher.encode_batch(pil_images)
+        uncached_indices = valid_indices
 
         for j, i in enumerate(uncached_indices):
             emb = emb_list[j]

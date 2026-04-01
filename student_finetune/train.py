@@ -76,7 +76,7 @@ TEACHER = "dinov3_ft"  # Single teacher mode -- trying our fine-tuned DINOv3 (12
 # Example: TEACHERS = {"trendyol_onnx": 0.5, "dinov2": 0.5}
 TEACHERS: dict[str, float] | None = None
 OUTPUT_DIR = "/data/training/reid/workspace/output/distill_trendyol_lcnet050_retail"
-RETRIEVAL_MAX_SAMPLES = 5000
+RETRIEVAL_MAX_SAMPLES = 10000
 RETRIEVAL_TOPK = 5
 
 # --- SSL Contrastive Loss ---

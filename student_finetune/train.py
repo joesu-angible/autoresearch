@@ -1450,10 +1450,14 @@ def main() -> None:
     # Resolve active teachers (per D-03, D-05)
     teacher_names, teacher_weights = _get_active_teachers()
 
-    # Collect all image paths for cache building
+    # Collect ALL image paths for cache building (must include every possible path)
     all_image_paths = [s[0] for s in distill_dataset.samples]
     if distill_dataset.retail_samples:
         all_image_paths += [s[0] for s in distill_dataset.retail_samples]
+    if hasattr(distill_dataset, 'blacklist_samples') and distill_dataset.blacklist_samples:
+        all_image_paths += [s[0] for s in distill_dataset.blacklist_samples]
+    # Deduplicate
+    all_image_paths = list(set(all_image_paths))
 
     # Identify which teachers are RADIO-based
     radio_teacher_names = [n for n in teacher_names if n.startswith("radio_")]
@@ -1526,10 +1530,11 @@ def main() -> None:
     # Dims read from metadata.json (never hardcoded)
     radio_proj_heads: nn.ModuleDict | None = None
     if radio_teacher_names and radio_adaptor_dims:
+        # RADIO proj heads: student backbone 1280d -> RADIO adaptor dim
         radio_proj_heads = nn.ModuleDict({
             adaptor: nn.Sequential(
-                nn.Linear(summary_dim, EMBEDDING_DIM),
-                nn.BatchNorm1d(EMBEDDING_DIM),
+                nn.Linear(1280, summary_dim),
+                nn.BatchNorm1d(summary_dim),
             )
             for adaptor, summary_dim in radio_adaptor_dims.items()
         }).to(device)

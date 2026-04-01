@@ -1937,24 +1937,27 @@ def main() -> None:
         if val_dataset is not None:
             # Get mean_cosine from a quick forward pass on distill data (use first/default teacher)
             default_t_name = teacher_names[0]
-            default_t_cache = TEACHER_REGISTRY[default_t_name]["cache_dir"]
-            model.eval()
-            cos_sum, cos_n = 0.0, 0
-            with torch.no_grad():
-                for images, labels, paths in distill_loader:
-                    images = images.to(device, non_blocking=True)
-                    teacher_emb = load_teacher_embeddings(paths, teachers_dict[default_t_name], device, default_t_cache, teacher_name=default_t_name)
-                    # Use proj_head for teacher dim if available, else encode()
-                    if hasattr(model, 'proj_heads') and model.proj_heads is not None and default_t_name in model.proj_heads:
-                        backbone_feat = model.forward_backbone(images)
-                        student_emb = functional.normalize(model.proj_heads[default_t_name](backbone_feat), p=2, dim=1)
-                    else:
-                        student_emb = model.encode(images)
-                    teacher_emb = teacher_emb.to(device=device, dtype=student_emb.dtype)
-                    cos = functional.cosine_similarity(student_emb, teacher_emb, dim=1)
-                    cos_sum += cos.sum().item()
-                    cos_n += len(cos)
-            mean_cos = cos_sum / max(cos_n, 1)
+            # Skip cosine eval if first teacher is RADIO (not in teachers_dict)
+            if default_t_name.startswith("radio_"):
+                logger.info("SWA: skipping cosine eval for RADIO teacher (using last epoch cosine)")
+            else:
+                default_t_cache = TEACHER_REGISTRY[default_t_name]["cache_dir"]
+                model.eval()
+                cos_sum, cos_n = 0.0, 0
+                with torch.no_grad():
+                    for images, labels, paths in distill_loader:
+                        images = images.to(device, non_blocking=True)
+                        teacher_emb = load_teacher_embeddings(paths, teachers_dict[default_t_name], device, default_t_cache, teacher_name=default_t_name)
+                        if hasattr(model, 'proj_heads') and model.proj_heads is not None and default_t_name in model.proj_heads:
+                            backbone_feat = model.forward_backbone(images)
+                            student_emb = functional.normalize(model.proj_heads[default_t_name](backbone_feat), p=2, dim=1)
+                        else:
+                            student_emb = model.encode(images)
+                        teacher_emb = teacher_emb.to(device=device, dtype=student_emb.dtype)
+                        cos = functional.cosine_similarity(student_emb, teacher_emb, dim=1)
+                        cos_sum += cos.sum().item()
+                        cos_n += len(cos)
+                mean_cos = cos_sum / max(cos_n, 1)
 
             retrieval_metrics = run_retrieval_eval(
                 model=model, dataset=val_dataset, device=device,

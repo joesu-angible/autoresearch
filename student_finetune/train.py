@@ -1624,8 +1624,11 @@ def main() -> None:
             if emb_files:
                 all_embs = []
                 for ef in emb_files:
-                    all_embs.append(torch.from_numpy(np.load(str(ef))))
-                all_teacher_embs = torch.cat(all_embs, dim=0).to(device) if all_embs[0].dim() > 0 else torch.stack(all_embs).to(device)
+                    emb = torch.from_numpy(np.load(str(ef)))
+                    if emb.dim() == 1:
+                        emb = emb.unsqueeze(0)
+                    all_embs.append(emb)
+                all_teacher_embs = torch.cat(all_embs, dim=0).to(device)
                 # Compute mean direction and angular dispersion
                 teacher_mean = all_teacher_embs.mean(dim=0)
                 teacher_mean_dir = functional.normalize(teacher_mean.unsqueeze(0), dim=1).squeeze(0)
@@ -1675,8 +1678,13 @@ def main() -> None:
             cache_path = Path(t_cache_dir)
             emb_files = sorted(cache_path.glob("*.npy"))
             if emb_files:
-                all_embs = [torch.from_numpy(np.load(str(ef))) for ef in emb_files]
-                all_teacher_embs = torch.cat(all_embs, dim=0).to(device) if all_embs[0].dim() > 0 else torch.stack(all_embs).to(device)
+                all_embs = []
+                for ef in emb_files:
+                    emb = torch.from_numpy(np.load(str(ef)))
+                    if emb.dim() == 1:
+                        emb = emb.unsqueeze(0)
+                    all_embs.append(emb)
+                all_teacher_embs = torch.cat(all_embs, dim=0).to(device)
                 phi_s.fit(all_teacher_embs)
                 logger.info(f"PHI-S fitted on {len(all_teacher_embs)} teacher embeddings from {default_t_name}")
                 del all_teacher_embs, all_embs

@@ -1567,8 +1567,10 @@ def main() -> None:
     # PHI-S: Hadamard isotropic standardization for multi-teacher gradient balancing
     phi_s: PHISTransform | None = None
     if ENABLE_PHI_S:
-        phi_s = PHISTransform(EMBEDDING_DIM).to(device)
-        logger.info("PHI-S enabled: will fit on teacher embeddings before training")
+        # Use teacher dim (not embedding dim) since PHI-S operates on teacher features
+        first_teacher_dim = teacher_dims[teacher_names[0]] if teacher_names else EMBEDDING_DIM
+        phi_s = PHISTransform(first_teacher_dim).to(device)
+        logger.info(f"PHI-S enabled: feature_dim={first_teacher_dim}, will fit on teacher embeddings")
 
     # Feature Normalizer: per-teacher whitening during warmup
     feat_normalizer: FeatureNormalizer | None = None

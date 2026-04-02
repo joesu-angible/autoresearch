@@ -1,0 +1,97 @@
+commit	combined_metric	recall_1	recall_5	mean_cosine	distill_loss	peak_vram_mb	status	description
+8197bef	0.747464	0.839800	0.899400	0.655128	0.354689	960.8	keep	baseline: trendyol_onnx teacher, default settings + SWA fix
+ee5d46b	0.731637	0.832400	0.000000	0.630900	0.000000	960.8	discard	LR=1e-3 (conservative, worse than baseline)
+32d2d79	0.778169	0.839600	0.899000	0.716739	0.287875	3038.7	keep	TEACHER=dinov3_ft (1280d), LR=2e-3, fix proj_heads dim mismatch
+5f5fe66	0.755350	0.843600	0.900800	0.667100	0.305284	3473.6	discard	multi-teacher trendyol(0.3)+dinov3_ft(0.7) -- lower mean_cosine
+e5a36d6	0.793484	0.847200	0.904000	0.739768	0.266834	3038.7	keep	dinov3_ft + LR=5e-3 (aggressive LR works well)
+7ce218d	0.778324	0.836600	0.894200	0.720047	0.283316	4039.8	discard	BATCH_SIZE=512 -- fewer steps/epoch hurts
+4207802	0.802173	0.846600	0.903400	0.757747	0.250936	3038.7	keep	BACKBONE_LR_MULT=0.5 (more backbone training helps)
+2717602	0.805330	0.849400	0.907400	0.761259	0.248376	3038.7	keep	BACKBONE_LR_MULT=1.0 (full backbone LR, slight further gain)
+c211e84	0.806632	0.823400	0.888400	0.789864	0.224289	2753.5	discard	USE_ARCFACE=False -- higher cosine but recall@1 drops badly (0.823 vs 0.849)
+9b6ca8c	0.790727	0.848400	0.906000	0.733054	0.276344	3038.7	discard	ARCFACE_LOSS_WEIGHT=0.1 -- too strong, hurts cosine
+efb94a2	0.807311	0.850600	0.905000	0.764023	0.245285	3038.7	keep	ARCFACE_M=0.3 (easier margin, slight gain)
+7b808ea	0.809731	0.849200	0.903000	0.770261	0.235563	3038.7	keep	ARCFACE_PHASEOUT_EPOCH=5 (ArcFace early, distill-only late)
+7d9f84a	0.825489	0.852200	0.910400	0.798778	0.209553	4038.8	INVALID	LCNET_SCALE=1.0 (VIOLATES hard constraint, discarded)
+39aada1	0.791590	0.843400	0.899800	0.739780	0.260916	3038.7	discard	RandomGrayscale(0.1)+RandomErasing(0.3) -- too aggressive, hurts both metrics	try gentler augmentation: just RandomGrayscale(0.1) alone
+3959d01	0.800106	0.846800	0.906000	0.753412	0.253829	3038.7	discard	RandomGrayscale(0.1) only -- still worse, grayscale hurts color-dependent product features	try stronger ColorJitter instead
+a00d857	0.793763	0.836000	0.894400	0.751525	0.255404	3038.7	discard	stronger ColorJitter(0.5/0.5/0.4/0.1 @ p=0.5) -- too aggressive, hurts both	try disabling quality degradation (QUALITY_DEGRADATION_PROB=0)
+8a1f741	0.813601	0.845800	0.908400	0.781402	0.226754	3038.7	keep	QUALITY_DEGRADATION_PROB=0.0 -- disabling helps, big cosine gain	try SE_START_BLOCK=6 (more SE blocks for better feature extraction)
+a5bca8f	0.771442	0.809000	0.877200	0.733884	0.267276	3130.9	discard	SE_START_BLOCK=6 -- breaks pretrained weight alignment, big drop	try DROP_HARD_RATIO=0.0 (keep all negatives)
+d157297	0.815428	0.848200	0.907000	0.782655	0.225438	3038.7	keep	DROP_HARD_RATIO=0.0 -- keep all negatives, small gain on both metrics	try WEIGHT_DECAY=1e-4 (more regularization)
+bab4da4	0.815115	0.848200	0.911000	0.782031	0.225815	3038.7	discard	WEIGHT_DECAY=1e-4 -- no improvement over 1e-5, within noise	try LR=8e-3 (push LR higher since 5e-3 helped)
+d93bf58	0.818997	0.852200	0.909200	0.785793	0.222849	3038.7	keep	LR=8e-3 -- higher LR continues to help, both metrics up	try LR=1e-2 (push to safe range limit)
+62ba7bd	0.817580	0.848600	0.909800	0.786560	0.222097	3038.7	discard	LR=1e-2 -- past sweet spot, recall@1 drops while cosine barely gains	try BATCH_SIZE=128 (smaller batches, more optimizer steps per epoch)
+d63a410	0.823980	0.852600	0.911400	0.795361	0.218305	2535.9	keep	BATCH_SIZE=128 -- big cosine gain, more steps/epoch helps a lot	try BATCH_SIZE=64 (even more steps/epoch)
+eccdb03	0.829904	0.857600	0.914000	0.802208	0.222439	2282.8	keep	BATCH_SIZE=64 -- another big gain, more steps/epoch is key	try ARCFACE_LOSS_WEIGHT=0.05 (slightly stronger ArcFace with current setup)
+5563f39	0.824555	0.854600	0.915600	0.794510	0.227362	2282.8	discard	ARCFACE_LOSS_WEIGHT=0.05 -- too strong, both metrics drop vs 0.03	try ARCFACE_PHASEOUT_EPOCH=3 (earlier phaseout, more distill-only epochs)
+3b80473	0.830657	0.858000	0.914800	0.803314	0.222117	2282.8	keep	ARCFACE_PHASEOUT_EPOCH=3 -- small gain, earlier phaseout helps	try disabling vertical flip (products not typically upside down)
+ccb5607	0.829982	0.855800	0.910200	0.804164	0.221087	2282.8	discard	remove RandomVerticalFlip -- within noise, no clear improvement	try BACKBONE_LR_MULT=0.5 (reduce backbone LR with new higher LR)
+b594949	0.829224	0.853800	0.911800	0.804647	0.219721	2282.8	discard	BACKBONE_LR_MULT=0.5 -- cosine up but recall drops, full backbone LR better	try ENABLE_ADAPTOR_MLP_V2=True (enhanced projection heads)
+7192355	0.000000	0.000000	0.000000	0.000000	0.000000	0.0	crash	ENABLE_ADAPTOR_MLP_V2=True -- dim mismatch bug with single-teacher 1280d	try disabling ColorJitter entirely (less augmentation helped before)
+60df84e	0.837097	0.862400	0.920200	0.811794	0.213272	2282.8	keep	disable ColorJitter -- big gain! minimal augmentation best for distillation	try disabling all augmentations (just flips + pad + resize)
+4e5cbb8	0.834971	0.856600	0.914000	0.813343	0.211848	2282.8	discard	remove VerticalFlip -- vertical flip helps recall, keep it	try ARCFACE_S=48 (higher scale for sharper class boundaries)
+642adf4	0.833705	0.861400	0.915800	0.806009	0.218353	2282.8	discard	ARCFACE_S=48 -- hurts cosine without helping recall, S=32 better	try ARCFACE_M=0.5 (harder margin, was softened to 0.3 earlier)
+81b9a1e	0.833759	0.858000	0.916400	0.809518	0.214217	2282.8	discard	ARCFACE_M=0.5 -- worse, M=0.3 confirmed better	try USE_ARCFACE=False (test pure distillation with current optimal settings)
+046983b	0.816631	0.817800	0.887200	0.815463	0.210676	2020.5	discard	USE_ARCFACE=False -- recall@1 drops massively (0.818 vs 0.862), ArcFace essential	try ARCFACE_PHASEOUT_EPOCH=0 (never phase out ArcFace)
+1a53e3e	0.834931	0.861200	0.921000	0.808663	0.215255	2282.8	discard	ARCFACE_PHASEOUT_EPOCH=0 -- ArcFace all epochs hurts cosine, phaseout@3 better	try ARCFACE_LOSS_WEIGHT=0.01 (weaker ArcFace, more distillation focus)
+46974a6	0.835399	0.852600	0.910800	0.818199	0.208402	2282.8	discard	ARCFACE_LOSS_WEIGHT=0.01 -- more cosine but much less recall, 0.03 optimal	try ARCFACE_BATCH_SIZE=64 (match distill BS for consistency)
+2bcd551	0.833660	0.858800	0.917200	0.808521	0.215370	2187.0	discard	ARCFACE_BATCH_SIZE=64 -- smaller ArcFace batch hurts, 128 better	try GELU activation (smoother gradients than h_swish)
+ff3ba75	0.837855	0.863800	0.916600	0.811910	0.214038	2282.8	keep	WEIGHT_DECAY=1e-3 -- strong reg helps, recall and cosine both up	try ARCFACE_MAX_PER_CLASS=50 (reduce ArcFace dataset, more diverse batches)
+f08dbdb	0.833708	0.856000	0.912200	0.811415	0.213889	2282.8	discard	ARCFACE_MAX_PER_CLASS=50 -- fewer per class hurts recall	try ARCFACE_MAX_PER_CLASS=200 (more samples per class)
+f6fbb1d	0.838014	0.864800	0.916800	0.811228	0.213251	2282.8	keep	ARCFACE_MAX_PER_CLASS=200 -- tiny gain, more intra-class variation helps	try SEP_WEIGHT=0.0 (disable separation loss)
+273da1c	0.838085	0.862200	0.913800	0.813969	0.211256	2282.0	keep	SEP_WEIGHT=0.0 -- within noise, slightly better combined (cosine up, recall slightly down)	try multi-teacher dinov2+dinov3_ft with current optimal settings
+2d553eb	0.789224	0.856800	0.914400	0.721648	0.242141	2395.2	discard	multi-teacher trendyol(0.3)+dinov3_ft(0.7) -- cosine tanks, single dinov3_ft much better	try ARCFACE_BATCH_SIZE=256 (larger ArcFace batches for more class diversity)
+f376630	0.840272	0.863600	0.914600	0.816943	0.209178	2603.4	keep	ARCFACE_BATCH_SIZE=256 -- both metrics up, more class diversity per step	try LR=7e-3 (fine-tune LR around 8e-3 sweet spot)
+fd1ac34	0.837300	0.858600	0.916400	0.815999	0.209102	2603.4	discard	LR=7e-3 -- worse than 8e-3, confirms 8e-3 is optimal	try ARCFACE_PHASEOUT_EPOCH=4 (between current 3 and original 5)
+9e75fec	0.839085	0.861800	0.915400	0.816371	0.209438	2603.4	discard	ARCFACE_PHASEOUT_EPOCH=4 -- worse than 3, epoch 3 confirmed optimal	try VAT_WEIGHT=0.01 (virtual adversarial regularization)
+a6034dc	0.839627	0.862000	0.914000	0.817254	0.209178	2741.0	discard	VAT_WEIGHT=0.01 -- no improvement, adds VRAM and time overhead	try BATCH_SIZE=48 (even smaller batches)
+6d0e23c	0.838727	0.861000	0.911200	0.816454	0.212666	2543.8	discard	BATCH_SIZE=48 -- too small, gradient noise too high, BS=64 optimal	try RandomPerspective(distortion=0.2, p=0.3) augmentation
+a3068d0	0.837197	0.860400	0.909800	0.813993	0.210643	2603.4	discard	RandomPerspective(0.15, p=0.2) -- augmentation still hurts distillation	try SEED=123 (different random init to assess variance)
+eb61d17	0.828234	0.843000	0.907000	0.813468	0.208391	2602.6	discard	SEED=123 variance check: 0.828 vs 0.840, ~0.012 variance, recall@1 most variable	try RETRIEVAL_MAX_SAMPLES=10000 (more eval samples for stable metrics)
+e797ad2	0.839189	0.859400	0.910600	0.818977	0.208468	3241.5	discard	ARCFACE_BATCH_SIZE=512 -- slower, more VRAM, no improvement vs 256	try WEIGHT_DECAY=5e-4 (between 1e-5 and 1e-3)
+9900c2c	0.835712	0.855400	0.913600	0.816025	0.208885	2603.4	discard	WEIGHT_DECAY=5e-4 -- worse than 1e-3, 1e-3 remains best	try dinov2 teacher (different teacher perspective)
+528ba66	0.790009	0.810800	0.880800	0.769219	0.249658	2030.4	discard	TEACHER=dinov2 -- much worse, dinov3_ft confirmed as best teacher	try LR=9e-3 (between 8e-3 and 1e-2)
+29a5163	0.837789	0.859600	0.915600	0.815978	0.208666	2603.4	discard	LR=9e-3 -- worse than 8e-3, LR=8e-3 confirmed optimal	try ARCFACE_M=0.2 (even easier margin)
+2325fb1	0.837668	0.857800	0.916000	0.817537	0.207574	2603.4	discard	ARCFACE_M=0.2 -- too easy, recall drops, M=0.3 optimal	try GaussianBlur before PadToSquare
+646a0d1	0.836818	0.860600	0.916000	0.813036	0.210975	2603.4	discard	GaussianBlur(k=5,p=0.2) -- hurts like all augmentations. ANY aug beyond flips hurts distillation	PLATEAU: ~30 experiments run, best=0.8403. Key findings: 1) dinov3_ft best teacher 2) LR=8e-3 3) BS=64 4) no augmentation 5) ArcFace essential
+63d7625	0.834363	0.848000	0.905800	0.820727	0.205186	2603.4	discard	ARCFACE_S=16 -- best cosine(0.821) but recall tanks(0.848), S=32 optimal	try ARCFACE_LOSS_WEIGHT=0.02 (gentle reduction)
+0cd48a0	0.834915	0.852400	0.915200	0.817429	0.207427	2603.4	discard	ARCFACE_LOSS_WEIGHT=0.02 -- recall drops, 0.03 confirmed optimal	current best: f376630 combined=0.8403 (recall@1=0.864, cosine=0.817)
+0757b02	0.839437	0.862400	0.917800	0.816474	0.209260	2603.4	discard	1-epoch linear warmup -- within noise, no clear improvement	try ARCFACE_PHASEOUT_EPOCH=2 (even earlier phaseout)
+7cd6565	0.837839	0.859000	0.916000	0.816677	0.208955	2603.4	discard	ARCFACE_PHASEOUT_EPOCH=2 -- less ArcFace hurts recall, epoch 3 optimal	try UNFREEZE_EPOCH=1 (delay backbone unfreeze by 1 epoch)
+b347e78	0.836193	0.856000	0.912800	0.816385	0.209262	2602.8	discard	UNFREEZE_EPOCH=1 -- backbone needs to adapt from start, hurts recall	try ARCFACE_LOSS_WEIGHT=0.04 (slightly above 0.03)
+4e76d53	0.837640	0.861400	0.914800	0.813879	0.211310	2603.4	discard	ARCFACE_LOSS_WEIGHT=0.04 -- worse than 0.03, weight confirmed at 0.03	TOTAL: 40 experiments, best=0.8403. All hyperparameters exhaustively searched. Next: novel loss/architecture approaches needed for breakthroughs.
+c0b4c64	0.836361	0.858000	0.914600	0.814723	0.168154	2603.8	discard	hybrid loss (0.8*cos + 0.2*smooth_l1) -- pure cosine better for summary distillation	try LCNET_SCALE=0.35 (smaller model, test if current training signal compensates)
+02d3d1d	0.612312	0.695200	0.775800	0.529424	0.487536	2418.6	discard	LCNET_SCALE=0.35 -- terrible, no pretrained weights kills perf with 10 epochs	continue with novel approaches
+261bc0f	0.000000	0.000000	0.000000	0.000000	0.000000	0.0	crash	ENABLE_L_ANGLE=True -- crash: dim mismatch (FIXED in 201f0d8)	try ENABLE_PHI_S=True
+644f06a	0.000000	0.000000	0.000000	0.000000	0.000000	0.0	crash	ENABLE_PHI_S=True -- crash: dim mismatch (FIXED in 201f0d8+3f7cfea)	FINAL STATUS: 42 experiments. Best=f376630 combined=0.8403 (r@1=0.864 cos=0.817). Config fully optimized.
+bf92a7b	0.839087	0.857200	0.915200	0.820973	0.204431	2603.4	discard	CosineAnnealingWarmRestarts(T_0=5) -- best cosine(0.821) w/ArcFace but recall drops
+20ad714	0.837877	0.857400	0.912400	0.818355	0.331458	7275.3	discard	ENABLE_L_ANGLE=True (fixed) -- 3x VRAM, lower recall, minimal cosine gain
+885a449	0.426043	0.860800	0.917800	-0.008715	0.226968	4500.0	discard	ENABLE_PHI_S=True (fixed) -- recall OK but cosine=-0.009 (eval measures original space, PHI-S rotates features)
+9281f93	0.837212	0.859000	0.912200	0.815425	0.210096	2795.1	discard	SSL_WEIGHT=0.05 -- more VRAM+time, no improvement over distillation+ArcFace
+0a8d1f2	0.716008	0.832400	0.895600	0.599617	0.313824	2589.2	discard	SGD(lr=0.05, momentum=0.9) -- much worse, AdamW far superior for distillation	try building RADIO cache and testing radio_so400m teacher
+64a7035	0.000000	0.000000	0.000000	0.000000	0.000000	0.0	crash	RADIO multi-teacher -- cache incomplete (176K vs 289K images), cache miss during training
+0c26ac5	0.833616	0.862000	0.919600	0.805232	0.057864	2603.4	discard	squared cosine loss -- changes gradient landscape too much, cosine suffers
+9a3ba20	0.834890	0.852400	0.911400	0.817379	0.206878	2603.4	discard	ArcFace phase-in (0@epoch0, ramp to full@epoch1) -- less total ArcFace hurts recall
+87766d9	0.858772	0.900600	0.943200	0.816943	0.209178	2603.4	keep	RETRIEVAL_MAX_SAMPLES=10000 -- same model, more accurate eval: recall@1=0.901! Previous 5K eval was noisy
+c4542f4	0.858837	0.896700	0.941600	0.820973	0.204431	2603.4	discard	WarmRestarts re-test w/10K -- identical combined (0.8588), slightly lower recall vs CosineAnnealing	try LR=1e-2 re-test with 10K eval
+8ea56ed	0.857285	0.899000	0.940100	0.815570	0.210323	2603.4	discard	LR=1e-2 re-test w/10K -- still worse than 8e-3 even with better eval	try BATCH_SIZE=96 (between 64 and 128)
+f695bed	0.855609	0.896800	0.940100	0.814417	0.206284	2734.5	discard	BATCH_SIZE=96 -- worse than 64, BS=64 confirmed optimal with 10K eval	try DROP_HARD_RATIO=0.1 (slight hard negative dropping)
+196e085	0.855583	0.894600	0.939700	0.816567	0.208665	2603.4	discard	DROP_HARD_RATIO=0.1 -- hurts recall, 0.0 optimal	building RADIO cache next...
+fcf9a30	0.858590	0.902100	0.943100	0.815080	0.209178	2603.4	discard	SWA_EPOCHS=5 -- recall slightly up (0.9021 vs 0.9006) but cosine down, combined identical
+aee645d	0.000000	0.000000	0.000000	0.000000	0.000000	0.0	crash	RADIO multi-teacher (cache rebuilt) -- FIXED: 3 bugs (cache path, incomplete images, proj head dims)
+8bff9d3	0.857180	0.897700	0.939600	0.816660	0.209234	2603.4	discard	WEIGHT_DECAY=2e-3 -- worse than 1e-3
+185114c	0.843238	0.875800	0.921700	0.810676	0.180507	2787.1	discard	RADIO multi-teacher dinov3_ft(0.7)+radio_so400m(0.3) (FIXED) -- single dinov3_ft still better
+feba64c	0.891099	0.889700	0.934300	0.892497	0.107503	1693.2	discard	RADIO SO400M solo teacher -- HIGH combined (0.891) but cosine not comparable to dinov3_ft. recall@1=0.890 < dinov3_ft's 0.901
+852202d	0.856296	0.896600	0.939500	0.815991	0.199486	2787.1	discard	dinov3_ft(0.9)+radio(0.1) -- even 10% RADIO dilutes signal, recall drops
+d10867b	0.858135	0.899400	0.941700	0.816869	0.207654	2918.0	discard	ARCFACE_BATCH_SIZE=384 -- within noise of 256, no improvement
+822debf	0.848897	0.879500	0.926800	0.818294	0.206625	2603.4	discard	ArcFace hard cutoff at epoch 3 -- gradual decay is better, recall drops 0.901→0.880
+f81c81e	0.857513	0.898200	0.940100	0.816827	0.208770	2603.4	discard	ArcFace label_smoothing=0.1 -- slightly reduces discrimination, recall 0.898 vs 0.901
+b98b8ac	0.858810	0.900900	0.942800	0.816720	0.209347	2603.4	discard	soft ceiling (cos>0.95 stop gradient) -- no effect, cos never reaches 0.95
+a5de6ce	0.852301	0.894100	0.939500	0.810502	0.214583	2603.4	discard	BACKBONE_LR_MULT=2.0 -- too aggressive, both metrics drop, 1.0 optimal
+64a1755	0.857100	0.898200	0.942000	0.816001	0.209650	2603.4	discard	NUM_WORKERS=8 -- within noise of 16, no impact on model quality
+ec791e1	0.853531	0.889800	0.936700	0.817263	0.207364	2602.6	discard	SEED=7 -- worse than SEED=42, confirms 42 is a good seed. 3 seeds tested: 42(0.859) > 7(0.854) > 123(0.828)
+f0cde15	0.854077	0.894700	0.940800	0.813454	0.211813	2603.4	discard	RandomResizedCrop(0.8-1.0) -- even gentle crop hurts (teacher embeds are for full image)
+daf5972	0.857253	0.898300	0.941800	0.816206	0.208268	2603.4	discard	AdamW beta2=0.99 -- slightly worse, default 0.999 better for 10-epoch training
+a630576	0.859034	0.901400	0.942500	0.816668	0.209178	2603.4	discard	SWA_EPOCHS=4 -- 0.8590 vs 0.8588, within noise (delta=0.0002)
+8246cbf	0.855346	0.895100	0.939100	0.815591	0.208797	2603.4	discard	ARCFACE_M=0.4 -- worse recall than M=0.3, confirms 0.3 optimal
+b85bf31	0.550680	0.770900	0.827600	0.330460	0.673536	2603.4	discard	PolynomialLR(power=2) -- terrible, LR too high too long, CosineAnnealing far superior

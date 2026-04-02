@@ -2,6 +2,16 @@
 
 This is the autonomous experimentation guide for LCNet student model training via knowledge distillation from multiple teacher models. You are training a lightweight LCNet backbone (256-dimensional embeddings) distilled from large teacher models (TrendyolONNX, DINOv2, DINOv3-FT, C-RADIO). Your goal: maximize recall@1 on the validation set.
 
+## Agent Configuration
+
+This experiment loop should be run by a specialized **AI Engineer agent** (`voltagent-data-ai:ai-engineer`). The agent brings deep knowledge of:
+- Knowledge distillation techniques and loss function design
+- Model architecture optimization under deployment constraints
+- Hyperparameter search strategies and experiment design
+- Reading and interpreting training metrics to form hypotheses
+
+The agent should treat this as a research project, not a checklist. Form hypotheses, test them, analyze results, and adapt strategy based on what the data reveals.
+
 ## Setup
 
 To set up a new student distillation experiment run, work with the user to:
@@ -38,6 +48,8 @@ These are absolute rules. Violating any one invalidates all experiments.
 4. **NEVER stop the loop** -- run until manually interrupted. The human may be asleep.
 
 5. **NEVER set BATCH_SIZE > 512** -- physical batch size is limited by VRAM on RTX 4090 (24GB). Distillation batch of 256 is default and safe.
+
+6. **NEVER increase LCNET_SCALE above 0.5** -- the student model must deploy on edge devices. The baseline `timm/lcnet_050.ra2_in1k` (~1.88M params, ~39M FLOPs at 224x224) is the hard ceiling. Any architecture change that pushes total params or FLOPs above the lcnet_050 baseline is forbidden. This means LCNET_SCALE=1.0 and LCNET_SCALE=1.5 are permanently off-limits.
 
 ## Search Space -- Experiment Variables
 
@@ -92,7 +104,7 @@ TEACHERS = {
 
 | Constant | Default | Safe Range | What It Controls |
 |----------|---------|------------|------------------|
-| `LCNET_SCALE` | 0.5 | [0.35, 1.5] | Width multiplier. 0.5 = lcnet_050, 1.0 = lcnet_100. More = larger model. |
+| `LCNET_SCALE` | 0.5 | [0.35, 0.5] | Width multiplier. **HARD LIMIT: never exceed 0.5** (edge deployment constraint). 0.35 = smaller/faster. |
 | `SE_START_BLOCK` | 10 | [0, 12] | Block index where Squeeze-and-Excite begins (0-indexed, 13 total blocks). Lower = more SE. |
 | `SE_REDUCTION` | 0.25 | [0.125, 0.5] | SE squeeze ratio. Lower = more capacity. |
 | `ACTIVATION` | `"h_swish"` | `"h_swish"`, `"relu"`, `"gelu"` | Activation function for LCNet blocks. |
@@ -112,7 +124,7 @@ TEACHERS = {
 | Constant | Default | Options | What It Controls |
 |----------|---------|---------|------------------|
 | `RADIO_VARIANT` | `"so400m"` | `"so400m"`, `"h"` | C-RADIOv4 model size |
-| `RADIO_ADAPTORS` | `["backbone"]` | subset of `["backbone", "dino_v3", "siglip2-g"]` | Which RADIO adaptors to distill from |
+| `RADIO_ADAPTORS` | `["backbone"]` | subset of `["backbone", "dino_v3_7b", "siglip2-g", "sam3"]` | Which RADIO adaptors to distill from |
 | `SPATIAL_DISTILL_WEIGHT` | 0.0 | [0.0, 1.0] | Spatial (per-patch) distillation from RADIO. 0 = disabled. |
 
 ### Advanced Training Techniques
@@ -131,7 +143,7 @@ TEACHERS = {
 
 ## Experiment Strategy (Prioritized)
 
-Work through these priorities in order. Exhaust each priority level before moving to the next.
+Work through these priorities roughly in order, but use your judgment — if you see an obvious opportunity at a lower priority, take it. Data augmentation (Priority 3) is especially impactful and should be explored early alongside teacher selection and LR tuning.
 
 ### Priority 1: Teacher Selection (MOST IMPACTFUL)
 
@@ -158,7 +170,11 @@ After finding the best teacher, tune LR and batch size.
 - BACKBONE_LR_MULT=0.01 (freeze backbone nearly)
 - BACKBONE_LR_MULT=0.5 (train backbone more)
 
-### Priority 3: ArcFace Tuning
+### Priority 3: Data Augmentation (HIGH IMPACT — explore creatively)
+
+See full section below (after Priority 6 numbering — it's listed as Priority 3 in execution order).
+
+### Priority 4: ArcFace Tuning
 
 ArcFace adds explicit class boundaries. Test the balance.
 
@@ -169,18 +185,37 @@ ArcFace adds explicit class boundaries. Test the balance.
 - `ARCFACE_M = 0.7` (harder margin)
 - `ARCFACE_PHASEOUT_EPOCH = 5` (ArcFace first half, then distillation only)
 
-### Priority 4: LCNet Architecture
+### Priority 5: LCNet Architecture (Iso-Parameter Experiments)
 
-Test if model capacity matters.
+Explore architecture changes that improve quality WITHOUT increasing params/FLOPs beyond the lcnet_050 baseline (~1.88M params, ~39M FLOPs at 224x224). **LCNET_SCALE must NEVER exceed 0.5.**
 
-**Suggested experiments:**
-- `LCNET_SCALE = 0.35` (tiny -- very fast inference)
-- `LCNET_SCALE = 1.0` (full LCNet -- 2x larger)
-- `SE_START_BLOCK = 6` (more SE modules)
-- `ACTIVATION = "gelu"` (different activation)
-- Wider kernels: `KERNEL_SIZES = [5,5,5,5,5,5,5,5,5,5,5,5,5]`
+**Suggested experiments (iso-parameter or parameter-reducing):**
 
-### Priority 5: Advanced Techniques
+1. **Smaller model (reduces params):**
+   - `LCNET_SCALE = 0.35` -- ~0.9M params (~52% fewer). Tests whether a smaller model with better training signal can match lcnet_050.
+
+2. **SE block placement (minimal param change):**
+   - `SE_START_BLOCK = 6` -- adds SE to blocks 6-12 instead of 10-12. At scale=0.5, this adds ~25K params (SE on 128-ch blocks: 2 x Conv1x1 with reduction=0.25 = ~8.4K per block). Total stays well under 1.88M.
+   - `SE_START_BLOCK = 0` -- SE on all 13 blocks. Adds ~35K total params (early blocks have 8-32 channels, so SE overhead is tiny: <1K per block). Still under baseline.
+   - `SE_START_BLOCK = 8` -- SE on blocks 8-12 only. Moderate SE coverage, ~17K extra params.
+
+3. **SE squeeze ratio (minimal param change):**
+   - `SE_REDUCTION = 0.125` -- halves SE mid-channels, removes ~25K params from SE blocks. Tests if SE with less capacity still helps.
+   - `SE_REDUCTION = 0.5` -- doubles SE mid-channels, adds ~25K params. More SE capacity, still well under baseline ceiling.
+
+4. **Activation function (zero param change, different compute profile):**
+   - `ACTIVATION = "gelu"` -- smoother gradient flow than h_swish. Same params, slightly higher FLOPs (~5% due to exp/erf), still well under baseline.
+   - `ACTIVATION = "relu"` -- fastest activation, fewer FLOPs than h_swish. Tests if simpler activation is sufficient with good distillation.
+
+5. **Kernel sizes (zero param change, modest FLOP change):**
+   - `KERNEL_SIZES = [5,5,5,5,5,5,5,5,5,5,5,5,5]` -- all 5x5 depthwise kernels. Adds ~0 params (depthwise conv weights scale with kernel area but are tiny: +16 weights per channel per block). FLOPs increase ~2.7x on depthwise layers, but depthwise is <5% of total FLOPs, so net impact is <15% total FLOP increase. Still under baseline.
+   - `KERNEL_SIZES = [3,3,3,3,3,3,3,3,3,5,5,5,5]` -- larger kernels only in later stages where receptive field matters most. Negligible FLOP/param change.
+   - `KERNEL_SIZES = [5,5,5,3,3,3,3,3,3,5,5,5,5]` -- larger kernels in early + late stages (capture both low-level texture and high-level structure).
+
+6. **Combined iso-param experiments (after individual winners identified):**
+   - Best SE_START_BLOCK + best ACTIVATION + best KERNEL_SIZES -- combine winners from above.
+
+### Priority 6: Advanced Techniques
 
 Only try these after Priorities 1-4 are exhausted.
 
@@ -192,13 +227,56 @@ Only try these after Priorities 1-4 are exhausted.
 - `ENABLE_ADAPTOR_MLP_V2 = True` (enhanced projection heads)
 - `VAT_WEIGHT = 0.01` (adversarial regularization)
 
-### Priority 6: Data Augmentation
+### Priority 3 (Full Section): Data Augmentation (HIGH IMPACT — explore creatively)
 
-**Suggested experiments:**
-- `QUALITY_DEGRADATION_PROB = 0.0` (no degradation)
-- `QUALITY_DEGRADATION_PROB = 0.8` (heavy degradation)
-- `DROP_HARD_RATIO = 0.0` (keep all negatives)
-- `DROP_HARD_RATIO = 0.4` (drop more hard negatives)
+Data augmentation is critical for ReID because product images in production vary wildly in quality, angle, lighting, and occlusion. The current augmentations in `build_train_transform()` are basic. **You are encouraged to go beyond the existing transforms and invent new ones.**
+
+**Current augmentation pipeline** (in `train.py` `build_train_transform()`):
+- RandomHorizontalFlip(p=0.5)
+- RandomVerticalFlip(p=0.5)
+- ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2, hue=0.05) @ p=0.4
+- PadToSquare + Resize
+- Normalize
+
+**Also**: `RandomQualityDegradation` (downsample + JPEG compression) applied before transforms via `QUALITY_DEGRADATION_PROB`.
+
+**Suggested experiments (starting points — do NOT limit yourself to these):**
+
+1. **Quality degradation tuning:**
+   - `QUALITY_DEGRADATION_PROB = 0.0` (disable — see how much it helps/hurts)
+   - `QUALITY_DEGRADATION_PROB = 0.8` (heavy — simulate bad cameras)
+   - Modify `RandomQualityDegradation` to also add Gaussian noise, motion blur, or defocus blur
+
+2. **Geometric augmentations:**
+   - Add `RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.8, 1.2))` — products may be rotated/shifted on shelves
+   - Add `RandomPerspective(distortion_scale=0.2, p=0.3)` — simulate different camera angles
+   - `RandomResizedCrop` instead of `Resize` — force the model to learn from partial views
+
+3. **Color/appearance augmentations:**
+   - Stronger ColorJitter — `brightness=0.5, contrast=0.5, saturation=0.4, hue=0.1`
+   - Add `RandomGrayscale(p=0.1)` — force model to not rely on color alone
+   - Add `GaussianBlur(kernel_size=5, sigma=(0.1, 2.0))` — simulate out-of-focus
+   - Random channel shuffle or channel dropout
+
+4. **Occlusion/masking augmentations:**
+   - `RandomErasing(p=0.3, scale=(0.02, 0.2))` — simulate partial occlusion by other products
+   - Cutout/CutMix style augmentation — mask random patches
+   - GridMask — structured occlusion pattern
+
+5. **ReID-specific augmentations (implement yourself in train.py):**
+   - **Random background swap**: Replace background with random color/noise (products on different shelves)
+   - **Product-aware crop**: Tight crop around the product, forcing the model to learn fine-grained features
+   - **Multi-scale training**: Randomly resize input to different scales (192, 224, 256) to learn scale-invariant features
+   - **Mixup for embeddings**: Interpolate between teacher embeddings of same-class images as soft targets
+
+6. **Hard negative augmentation:**
+   - `DROP_HARD_RATIO = 0.0` (keep all negatives — more learning signal)
+   - `DROP_HARD_RATIO = 0.4` (drop more hard negatives — less noisy gradients)
+   - Implement online hard negative mining — within each batch, weight loss by similarity rank
+
+**How to add new augmentations**: Edit `build_train_transform()` in `train.py`. You can add any transform from `torchvision.transforms` or implement custom transforms as classes with `__call__(self, img) -> img`. Keep augmentations as PIL-level transforms (before ToTensor).
+
+**Philosophy**: Think about what real production images look like vs training images. Any augmentation that bridges that gap is worth trying. Search for recent papers on product/retail augmentation if stuck.
 
 ## Workflow -- The Experiment Loop
 
@@ -254,9 +332,12 @@ It also writes `metrics.json` with full results.
 Log every experiment to `student_finetune/results.tsv` (tab-separated):
 
 ```
-commit	combined_metric	recall_1	recall_5	mean_cosine	distill_loss	peak_vram_mb	status	description
-a1b2c3d	0.654321	0.432100	0.567800	0.876543	0.012345	18432.1	keep	baseline
+commit	combined_metric	recall_1	recall_5	mean_cosine	distill_loss	peak_vram_mb	status	description	next_step
+a1b2c3d	0.654321	0.432100	0.567800	0.876543	0.012345	18432.1	keep	baseline	try dinov3_ft teacher (stronger signal)
+b2c3d4e	0.712345	0.860200	0.900000	0.564500	0.298000	980.2	keep	dinov3_ft teacher	try multi-teacher 0.5/0.5 blend
 ```
+
+The `next_step` column records your reasoning for the NEXT experiment — what you plan to try and why. This creates a decision trail that helps you (and future runs) understand the experimental logic.
 
 ## Crash Handling
 
@@ -277,9 +358,19 @@ a1b2c3d	0.654321	0.432100	0.567800	0.876543	0.012345	18432.1	keep	baseline
 
 Once the experiment loop has begun, do NOT pause to ask the human if you should continue. The human might be asleep. You are autonomous.
 
-If you run out of ideas:
-1. Re-read results.tsv for patterns
-2. Re-read train.py line by line for overlooked opportunities
-3. Re-read this program_student.md from the top
-4. Try combining the best settings from different experiments
-5. Try radical changes (different teacher, different architecture scale)
+If you run out of ideas from the priority list:
+
+1. **Analyze results.tsv deeply**: Look for patterns across ALL experiments. Which metric is the bottleneck (recall vs cosine)? Which changes had the biggest delta? Are there unexplored interactions between variables?
+2. **Hypothesize from data**: If recall is high but cosine is low, the model retrieves well but embeddings aren't tight — try stronger distillation weight or different loss. If cosine is high but recall is low, embeddings are similar but not discriminative — try ArcFace or harder negatives.
+3. **Search for novel approaches**: Use WebSearch to find recent papers on knowledge distillation, lightweight model training, or metric learning improvements. Look for techniques like:
+   - Progressive distillation (start with easy teacher, switch to hard)
+   - Curriculum learning (easy samples first)
+   - Label smoothing or soft targets
+   - Attention transfer from teacher to student
+   - Feature-based distillation (intermediate layers, not just final embedding)
+4. **Combine best settings**: Take the top-3 individual improvements and try 2-way and 3-way combinations.
+5. **Try contrarian experiments**: If all improvements went in one direction (e.g., softer loss), try the opposite extreme to verify the trend isn't local.
+6. **Ablation studies**: Remove one component at a time from the current best to understand which parts matter most.
+7. **Re-read train.py line by line**: Look for overlooked constants, unused features, or code paths that could be leveraged.
+
+Remember: you are an autonomous AI researcher. Do not just follow a checklist — THINK about what the data is telling you and form hypotheses. The best experiments come from understanding WHY something worked, not just WHAT worked.

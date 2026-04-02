@@ -50,33 +50,33 @@ from torchvision import transforms
 # EXPERIMENT VARIABLES (agent edits these)
 # ============================================================
 MODEL_NAME = "hf-hub:timm/lcnet_050.ra2_in1k"
-BATCH_SIZE = 256
-ARCFACE_BATCH_SIZE = 128
-LR = 2e-3
-WEIGHT_DECAY = 1e-5
+BATCH_SIZE = 64
+ARCFACE_BATCH_SIZE = 256
+LR = 8e-3
+WEIGHT_DECAY = 1e-3
 NUM_WORKERS = 16
 SEED = 42
 DEVICE = "cuda"
-QUALITY_DEGRADATION_PROB = 0.5
-DROP_HARD_RATIO = 0.2
+QUALITY_DEGRADATION_PROB = 0.0
+DROP_HARD_RATIO = 0.0
 USE_ARCFACE = True
 ARCFACE_S = 32.0
-ARCFACE_M = 0.50
+ARCFACE_M = 0.30
 ARCFACE_LOSS_WEIGHT = 0.03
-ARCFACE_PHASEOUT_EPOCH = 0     # 0 = disabled
-ARCFACE_MAX_PER_CLASS = 100
+ARCFACE_PHASEOUT_EPOCH = 3     # Phase out ArcFace at epoch 3, distillation-only for last 7
+ARCFACE_MAX_PER_CLASS = 200
 VAT_WEIGHT = 0.0
 VAT_EPSILON = 8.0
-SEP_WEIGHT = 1.0
+SEP_WEIGHT = 0.0
 UNFREEZE_EPOCH = 0             # 0 = unfreeze from start (per D-02)
-BACKBONE_LR_MULT = 0.1        # Backbone LR = LR * this
+BACKBONE_LR_MULT = 1.0        # Backbone LR = LR * this (full backbone training)
 # Teacher selection (per D-03, D-05)
-TEACHER = "trendyol_onnx"  # Single teacher mode (default, backward compatible)
+TEACHER = "dinov3_ft"  # Single teacher mode -- trying our fine-tuned DINOv3 (1280d)
 # Multi-teacher mode: set TEACHERS to enable, overrides TEACHER
 # Example: TEACHERS = {"trendyol_onnx": 0.5, "dinov2": 0.5}
 TEACHERS: dict[str, float] | None = None
-OUTPUT_DIR = "workspace/output/distill_trendyol_lcnet050_retail"
-RETRIEVAL_MAX_SAMPLES = 5000
+OUTPUT_DIR = "/data/training/reid/workspace/output/distill_trendyol_lcnet050_retail"
+RETRIEVAL_MAX_SAMPLES = 10000
 RETRIEVAL_TOPK = 5
 
 # --- SSL Contrastive Loss ---
@@ -85,7 +85,7 @@ SSL_TEMPERATURE = 0.07        # InfoNCE temperature (learnable, this is init val
 SSL_PROJ_DIM = 128            # SSL projection head output dim
 
 # --- Custom LCNet Backbone ---
-LCNET_SCALE = 0.5             # Width multiplier (0.5 matches current lcnet_050)
+LCNET_SCALE = 0.5             # Width multiplier (HARD LIMIT: never exceed 0.5 for edge deployment)
 SE_START_BLOCK = 10           # Block index where SE begins (0-indexed, 13 total blocks)
 SE_REDUCTION = 0.25           # SE squeeze ratio
 ACTIVATION = "h_swish"        # "h_swish" | "relu" | "gelu"
@@ -94,8 +94,8 @@ USE_PRETRAINED = True          # Load timm pretrained weights when scale matches
 
 # --- RADIO Teacher Configuration ---
 RADIO_VARIANT = "so400m"              # "so400m" or "h" (C-RADIOv4 variant)
-RADIO_ADAPTORS = ["backbone"]          # subset of ["backbone", "dino_v3", "siglip2-g"]
-RADIO_CACHE_BASE = "workspace/output/teacher_cache"
+RADIO_ADAPTORS = ["backbone"]          # subset of ["backbone", "dino_v3_7b", "siglip2-g", "sam3"]
+RADIO_CACHE_BASE = "/data/training/reid/workspace/output/teacher_cache"
 
 # --- Spatial Distillation ---
 SPATIAL_DISTILL_WEIGHT = 0.0   # 0.0 = disabled; agent sets positive value to enable spatial distillation from RADIO
@@ -300,9 +300,9 @@ class LCNet(nn.Module):
         self.gap = nn.AdaptiveAvgPool2d(1)
 
         # Projection head(s)
-        # Multi-teacher mode (per D-06): per-teacher projection heads
+        # Per-teacher projection heads for distillation (handles dim mismatch)
         self.proj_heads: nn.ModuleDict | None = None
-        if teacher_dims is not None and len(teacher_dims) > 1:
+        if teacher_dims is not None and len(teacher_dims) >= 1:
             self.proj_heads = nn.ModuleDict({
                 t_name: nn.Sequential(
                     nn.Linear(1280, t_dim),
@@ -310,11 +310,20 @@ class LCNet(nn.Module):
                 )
                 for t_name, t_dim in teacher_dims.items()
             })
-            # self.proj points to first teacher's head for encode() compatibility
+            # self.proj is always embedding_dim for encode() output
             first_name = next(iter(teacher_dims))
-            self.proj = self.proj_heads[first_name]
+            first_dim = teacher_dims[first_name]
+            if len(teacher_dims) == 1 and first_dim == embedding_dim:
+                # Single teacher with matching dim -- share projection
+                self.proj = self.proj_heads[first_name]
+            else:
+                # Teacher dim(s) differ from embedding_dim -- separate encode projection
+                self.proj = nn.Sequential(
+                    nn.Linear(1280, embedding_dim),
+                    nn.BatchNorm1d(embedding_dim),
+                )
         else:
-            # Single-teacher mode (backward compatible)
+            # No teacher_dims provided (backward compatible)
             self.proj = nn.Sequential(
                 nn.Linear(1280, embedding_dim),
                 nn.BatchNorm1d(embedding_dim),
@@ -658,7 +667,6 @@ def build_train_transform(image_size: int) -> transforms.Compose:
     return transforms.Compose([
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.RandomVerticalFlip(p=0.5),
-        transforms.RandomApply([transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2, hue=0.05)], p=0.4),
         PadToSquare(),
         transforms.Resize((image_size, image_size)),
         transforms.ToTensor(),
@@ -1442,10 +1450,14 @@ def main() -> None:
     # Resolve active teachers (per D-03, D-05)
     teacher_names, teacher_weights = _get_active_teachers()
 
-    # Collect all image paths for cache building
+    # Collect ALL image paths for cache building (must include every possible path)
     all_image_paths = [s[0] for s in distill_dataset.samples]
     if distill_dataset.retail_samples:
         all_image_paths += [s[0] for s in distill_dataset.retail_samples]
+    if hasattr(distill_dataset, 'blacklist_samples') and distill_dataset.blacklist_samples:
+        all_image_paths += [s[0] for s in distill_dataset.blacklist_samples]
+    # Deduplicate
+    all_image_paths = list(set(all_image_paths))
 
     # Identify which teachers are RADIO-based
     radio_teacher_names = [n for n in teacher_names if n.startswith("radio_")]
@@ -1498,28 +1510,17 @@ def main() -> None:
     if radio_teacher_names:
         logger.info(f"RADIO teachers use cached embeddings: variant={RADIO_VARIANT}, adaptors={RADIO_ADAPTORS}")
 
-    # Model
-    if len(teacher_names) > 1:
-        model = LCNet(
-            scale=LCNET_SCALE,
-            se_start_block=SE_START_BLOCK,
-            se_reduction=SE_REDUCTION,
-            activation=ACTIVATION,
-            kernel_sizes=KERNEL_SIZES,
-            embedding_dim=EMBEDDING_DIM,
-            device=str(device),
-            teacher_dims=teacher_dims,
-        ).to(device)
-    else:
-        model = LCNet(
-            scale=LCNET_SCALE,
-            se_start_block=SE_START_BLOCK,
-            se_reduction=SE_REDUCTION,
-            activation=ACTIVATION,
-            kernel_sizes=KERNEL_SIZES,
-            embedding_dim=EMBEDDING_DIM,
-            device=str(device),
-        ).to(device)
+    # Model -- always pass teacher_dims so proj_heads handle dimension mismatch
+    model = LCNet(
+        scale=LCNET_SCALE,
+        se_start_block=SE_START_BLOCK,
+        se_reduction=SE_REDUCTION,
+        activation=ACTIVATION,
+        kernel_sizes=KERNEL_SIZES,
+        embedding_dim=EMBEDDING_DIM,
+        device=str(device),
+        teacher_dims=teacher_dims,
+    ).to(device)
 
     if USE_PRETRAINED:
         load_pretrained_lcnet(model, LCNET_SCALE)
@@ -1529,10 +1530,11 @@ def main() -> None:
     # Dims read from metadata.json (never hardcoded)
     radio_proj_heads: nn.ModuleDict | None = None
     if radio_teacher_names and radio_adaptor_dims:
+        # RADIO proj heads: student backbone 1280d -> RADIO adaptor dim
         radio_proj_heads = nn.ModuleDict({
             adaptor: nn.Sequential(
-                nn.Linear(summary_dim, EMBEDDING_DIM),
-                nn.BatchNorm1d(EMBEDDING_DIM),
+                nn.Linear(1280, summary_dim),
+                nn.BatchNorm1d(summary_dim),
             )
             for adaptor, summary_dim in radio_adaptor_dims.items()
         }).to(device)
@@ -1570,8 +1572,10 @@ def main() -> None:
     # PHI-S: Hadamard isotropic standardization for multi-teacher gradient balancing
     phi_s: PHISTransform | None = None
     if ENABLE_PHI_S:
-        phi_s = PHISTransform(EMBEDDING_DIM).to(device)
-        logger.info("PHI-S enabled: will fit on teacher embeddings before training")
+        # Use teacher dim (not embedding dim) since PHI-S operates on teacher features
+        first_teacher_dim = teacher_dims[teacher_names[0]] if teacher_names else EMBEDDING_DIM
+        phi_s = PHISTransform(first_teacher_dim).to(device)
+        logger.info(f"PHI-S enabled: feature_dim={first_teacher_dim}, will fit on teacher embeddings")
 
     # Feature Normalizer: per-teacher whitening during warmup
     feat_normalizer: FeatureNormalizer | None = None
@@ -1627,8 +1631,11 @@ def main() -> None:
             if emb_files:
                 all_embs = []
                 for ef in emb_files:
-                    all_embs.append(torch.from_numpy(np.load(str(ef))))
-                all_teacher_embs = torch.cat(all_embs, dim=0).to(device) if all_embs[0].dim() > 0 else torch.stack(all_embs).to(device)
+                    emb = torch.from_numpy(np.load(str(ef)))
+                    if emb.dim() == 1:
+                        emb = emb.unsqueeze(0)
+                    all_embs.append(emb)
+                all_teacher_embs = torch.cat(all_embs, dim=0).to(device)
                 # Compute mean direction and angular dispersion
                 teacher_mean = all_teacher_embs.mean(dim=0)
                 teacher_mean_dir = functional.normalize(teacher_mean.unsqueeze(0), dim=1).squeeze(0)
@@ -1678,8 +1685,13 @@ def main() -> None:
             cache_path = Path(t_cache_dir)
             emb_files = sorted(cache_path.glob("*.npy"))
             if emb_files:
-                all_embs = [torch.from_numpy(np.load(str(ef))) for ef in emb_files]
-                all_teacher_embs = torch.cat(all_embs, dim=0).to(device) if all_embs[0].dim() > 0 else torch.stack(all_embs).to(device)
+                all_embs = []
+                for ef in emb_files:
+                    emb = torch.from_numpy(np.load(str(ef)))
+                    if emb.dim() == 1:
+                        emb = emb.unsqueeze(0)
+                    all_embs.append(emb)
+                all_teacher_embs = torch.cat(all_embs, dim=0).to(device)
                 phi_s.fit(all_teacher_embs)
                 logger.info(f"PHI-S fitted on {len(all_teacher_embs)} teacher embeddings from {default_t_name}")
                 del all_teacher_embs, all_embs
@@ -1915,26 +1927,37 @@ def main() -> None:
     if swa_state is not None and swa_count > 0:
         logger.info(f"Applying SWA weights (averaged over {swa_count} epochs)...")
         for k in swa_state:
-            swa_state[k] /= swa_count
+            if swa_state[k].is_floating_point():
+                swa_state[k] /= swa_count
+            else:
+                swa_state[k] //= swa_count
         model.load_state_dict(swa_state)
 
         # Re-evaluate with SWA weights
         if val_dataset is not None:
             # Get mean_cosine from a quick forward pass on distill data (use first/default teacher)
             default_t_name = teacher_names[0]
-            default_t_cache = TEACHER_REGISTRY[default_t_name]["cache_dir"]
-            model.eval()
-            cos_sum, cos_n = 0.0, 0
-            with torch.no_grad():
-                for images, labels, paths in distill_loader:
-                    images = images.to(device, non_blocking=True)
-                    teacher_emb = load_teacher_embeddings(paths, teachers_dict[default_t_name], device, default_t_cache, teacher_name=default_t_name)
-                    student_emb = model.encode(images)
-                    teacher_emb = teacher_emb.to(device=device, dtype=student_emb.dtype)
-                    cos = functional.cosine_similarity(student_emb, teacher_emb, dim=1)
-                    cos_sum += cos.sum().item()
-                    cos_n += len(cos)
-            mean_cos = cos_sum / max(cos_n, 1)
+            # Skip cosine eval if first teacher is RADIO (not in teachers_dict)
+            if default_t_name.startswith("radio_"):
+                logger.info("SWA: skipping cosine eval for RADIO teacher (using last epoch cosine)")
+            else:
+                default_t_cache = TEACHER_REGISTRY[default_t_name]["cache_dir"]
+                model.eval()
+                cos_sum, cos_n = 0.0, 0
+                with torch.no_grad():
+                    for images, labels, paths in distill_loader:
+                        images = images.to(device, non_blocking=True)
+                        teacher_emb = load_teacher_embeddings(paths, teachers_dict[default_t_name], device, default_t_cache, teacher_name=default_t_name)
+                        if hasattr(model, 'proj_heads') and model.proj_heads is not None and default_t_name in model.proj_heads:
+                            backbone_feat = model.forward_backbone(images)
+                            student_emb = functional.normalize(model.proj_heads[default_t_name](backbone_feat), p=2, dim=1)
+                        else:
+                            student_emb = model.encode(images)
+                        teacher_emb = teacher_emb.to(device=device, dtype=student_emb.dtype)
+                        cos = functional.cosine_similarity(student_emb, teacher_emb, dim=1)
+                        cos_sum += cos.sum().item()
+                        cos_n += len(cos)
+                mean_cos = cos_sum / max(cos_n, 1)
 
             retrieval_metrics = run_retrieval_eval(
                 model=model, dataset=val_dataset, device=device,

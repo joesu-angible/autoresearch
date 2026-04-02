@@ -1,0 +1,11 @@
+# Model checkpoints
+*.pt
+*.onnx
+
+# Logs
+*.log
+
+# Runtime
+__pycache__/
+metrics.json
+metrics_final.json

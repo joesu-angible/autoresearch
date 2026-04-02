@@ -248,7 +248,17 @@ class DINOv2Teacher:
         batch = torch.stack(tensors).to(self.device)
         with torch.amp.autocast(self.device):
             out = self.model(batch)
-        emb = out.last_hidden_state[:, 0, :]  # CLS token only, shape (B, 256)
+        # Handle both 3D (B, seq_len, D) and 2D (B, D) model outputs
+        if hasattr(out, "last_hidden_state"):
+            hidden = out.last_hidden_state
+            emb = hidden[:, 0, :] if hidden.ndim == 3 else hidden
+        elif hasattr(out, "pooler_output") and out.pooler_output is not None:
+            emb = out.pooler_output
+        else:
+            # Fallback: treat raw output as embeddings
+            emb = out[0] if isinstance(out, (tuple, list)) else out
+            if emb.ndim == 3:
+                emb = emb[:, 0, :]
         return [e.cpu().numpy().flatten() for e in emb]
 
 
@@ -323,7 +333,9 @@ RADIO_VERSION_MAP: dict[str, str] = {
 }
 
 # Default adaptors available for C-RADIOv4 models
-RADIO_DEFAULT_ADAPTORS = ["backbone", "dino_v3", "siglip2-g"]
+# Actual model output keys: "siglip2-g", "dino_v3_7b", "sam3"
+# "backbone" is the no-adaptor case (summary, features) tuple
+RADIO_DEFAULT_ADAPTORS = ["backbone", "dino_v3_7b", "siglip2-g", "sam3"]
 
 
 class RADIOTeacher:
@@ -740,25 +752,25 @@ TEACHER_REGISTRY: dict[str, dict] = {
     "dinov2": {
         "class": DINOv2Teacher,
         "embedding_dim": 256,
-        "cache_dir": "../workspace/output/teacher_cache/dinov2",
+        "cache_dir": "/data/training/reid/workspace/output/teacher_cache/dinov2",
         "init_kwargs": {"model_name": "Trendyol/trendyol-dino-v2-ecommerce-256d"},
     },
     "dinov3_ft": {
         "class": DINOv3FTTeacher,
         "embedding_dim": 1280,
-        "cache_dir": "../workspace/output/teacher_cache/dinov3_ft",
+        "cache_dir": "/data/training/reid/workspace/output/teacher_cache/dinov3_ft",
         "init_kwargs": {"adapter_path": "../dino_finetune/output/best_adapter"},
     },
     "radio_so400m": {
         "class": RADIOTeacher,
         "embedding_dim": None,  # determined at init time -- read from metadata.json
-        "cache_dir": "../workspace/output/teacher_cache/radio_so400m",
+        "cache_dir": "/data/training/reid/workspace/output/teacher_cache/radio_so400m",
         "init_kwargs": {"variant": "so400m"},
     },
     "radio_h": {
         "class": RADIOTeacher,
         "embedding_dim": None,  # determined at init time -- read from metadata.json
-        "cache_dir": "../workspace/output/teacher_cache/radio_h",
+        "cache_dir": "/data/training/reid/workspace/output/teacher_cache/radio_h",
         "init_kwargs": {"variant": "h"},
     },
 }
@@ -855,7 +867,11 @@ class SampledImageFolder(Dataset):
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, int] | tuple[torch.Tensor, int, str]:
         path, target = self.samples[index]
-        img = Image.open(path).convert("RGB")
+        try:
+            img = Image.open(path).convert("RGB")
+        except Exception:
+            path, target = random.choice(self.samples)
+            img = Image.open(path).convert("RGB")
         if self.transform is not None:
             img = self.transform(img)
         if self.return_path:
@@ -1289,10 +1305,21 @@ def load_teacher_embeddings(
                 continue
         uncached_indices.append(i)
 
-    # Phase 2: batch inference for uncached images
+    # Phase 2: batch inference for uncached images (skip unreadable)
     if uncached_indices:
-        pil_images = [Image.open(image_paths[i]).convert("RGB") for i in uncached_indices]
+        valid_indices = []
+        pil_images = []
+        for i in uncached_indices:
+            try:
+                img = Image.open(image_paths[i]).convert("RGB")
+                pil_images.append(img)
+                valid_indices.append(i)
+            except Exception as e:
+                logger.warning(f"Skipping unreadable image: {image_paths[i]} ({e})")
+        if not pil_images:
+            return embeddings
         emb_list = teacher.encode_batch(pil_images)
+        uncached_indices = valid_indices
 
         for j, i in enumerate(uncached_indices):
             emb = emb_list[j]

@@ -26,7 +26,7 @@ from prepare import (
     build_distill_dataset, build_arcface_dataset, build_val_dataset,
     # Constants
     EPOCHS, EMBEDDING_DIM, IMAGE_SIZE,
-    SKIP_CLASSES, VAL_DIR,
+    SKIP_CLASSES, VAL_DIR, RADIO_CACHE_BASE,
     # Utility
     set_seed,
 )
@@ -95,7 +95,7 @@ USE_PRETRAINED = True          # Load timm pretrained weights when scale matches
 # --- RADIO Teacher Configuration ---
 RADIO_VARIANT = "so400m"              # "so400m" or "h" (C-RADIOv4 variant)
 RADIO_ADAPTORS = ["backbone"]          # subset of ["backbone", "dino_v3_7b", "siglip2-g", "sam3"]
-RADIO_CACHE_BASE = "/data/training/reid/workspace/output/teacher_cache"
+# RADIO_CACHE_BASE imported from prepare.py
 
 # --- Spatial Distillation ---
 SPATIAL_DISTILL_WEIGHT = 0.0   # 0.0 = disabled; agent sets positive value to enable spatial distillation from RADIO

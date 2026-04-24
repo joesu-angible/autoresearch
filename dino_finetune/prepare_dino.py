@@ -26,11 +26,15 @@ from transformers import AutoImageProcessor, AutoModel
 BASE_MODEL_ID = "facebook/dinov3-vith16plus-pretrain-lvd1689m"
 EMBEDDING_DIM = 1280          # DINOv3 ViT-H+ native dimension
 IMAGE_SIZE = 518              # DINOv3 default resolution from AutoImageProcessor
-TRAIN_DIR = "/data/mnt/mnt_ml_shared/Vic/product_code_dataset/train"
-VAL_DIR = "/data/mnt/mnt_ml_shared/Vic/product_code_dataset/val"
+TRAIN_DIR = "/data/training/reid/product_code_dataset/train"
+VAL_DIR = "/data/training/reid/product_code_dataset/val"
+REID_PRODUCTS_DIR = "/data/training/reid/reid_products"
+RETAIL_DIR = "/data/training/reid/retail_product_checkout_crop"
 SKIP_CLASSES = {"0000000000"}
 EPOCHS = 10                   # Fixed budget per experiment
 ADAPTER_OUTPUT_DIR = "dino_finetune/output/best_adapter"
+LAST_ADAPTER_DIR = "dino_finetune/output/last_adapter"
+CHECKPOINT_PATH = "dino_finetune/output/last_adapter/checkpoint.pt"
 
 
 # ---------------------------------------------------------------------------

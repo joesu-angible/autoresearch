@@ -12,6 +12,8 @@ from prepare_dino import (
     extract_cls_embedding, evaluate_dino, save_adapter,
     EPOCHS, EMBEDDING_DIM, ADAPTER_OUTPUT_DIR,
     TRAIN_DIR, VAL_DIR, SKIP_CLASSES,
+    REID_PRODUCTS_DIR, RETAIL_DIR,
+    LAST_ADAPTER_DIR, CHECKPOINT_PATH,
     set_seed, collate_fn,
 )
 
@@ -65,13 +67,9 @@ EARLY_STOP_COLLAPSE_CONSECUTIVE = 3  # Stop only after N consecutive collapsed e
 
 NUM_WORKERS = 4                      # DataLoader workers
 DEVICE = "cuda"
-LAST_ADAPTER_DIR = "dino_finetune/output/last_adapter"   # Saved every epoch
-CHECKPOINT_PATH = "dino_finetune/output/last_adapter/checkpoint.pt"  # For resume
 
-# Combined dataset paths (richer training data)
+# Combined dataset knobs (paths live in prepare_dino.py)
 USE_COMBINED_DATASET = True                  # Use combined data from multiple sources
-REID_PRODUCTS_DIR = "/data/mnt/mnt_ml_shared/joesu/reid/data/reid_train/train/products"
-RETAIL_DIR = "/data/mnt/mnt_ml_shared/Vic/retail_product_checkout_crop"
 RETAIL_MAX_PER_CLASS = 100                   # Cap retail samples per class
 
 

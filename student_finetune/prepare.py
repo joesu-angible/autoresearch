@@ -46,15 +46,16 @@ import onnxruntime as ort
 EPOCHS = 10                    # Fixed budget per experiment (immutable)
 EMBEDDING_DIM = 256
 IMAGE_SIZE = 224
-TRAIN_DIR = "/data/mnt/mnt_ml_shared/Vic/product_code_dataset/train"
-VAL_DIR = "/data/mnt/mnt_ml_shared/Vic/product_code_dataset/val"
-ARCFACE_DIR = "/data/mnt/mnt_ml_shared/Vic/retail_product_checkout_crop"
-REID_ROOT = Path("/data/mnt/mnt_ml_shared/joesu/reid/data/reid_train/train")
+TRAIN_DIR = "/data/training/reid/product_code_dataset/train"
+VAL_DIR = "/data/training/reid/product_code_dataset/val"
+ARCFACE_DIR = "/data/training/reid/retail_product_checkout_crop"
+REID_ROOT = Path("/data/training/reid/reid_multiple")
 REID_PRODUCTS = str(REID_ROOT / "products")
 REID_COMMODITY = str(REID_ROOT / "commodity")
 REID_NEGATIVES = str(REID_ROOT / "negatives")
 SKIP_CLASSES = {"0000000000"}
 DEFAULT_TEACHER_CACHE_DIR = "/data/training/reid/workspace/output/trendyol_teacher_cache2"
+RADIO_CACHE_BASE = "/data/training/reid/workspace/output/teacher_cache"
 
 
 # ---------------------------------------------------------------------------

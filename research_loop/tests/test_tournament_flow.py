@@ -61,6 +61,84 @@ def test_propose_unknown_target_returns_error(tmp_history):
     assert tournament.cmd_propose("not_a_target", "x", baseline_only=False) == 2
 
 
+# ---------------------------------------------------------------------------
+# --variants mode (issue #9 Goal 3)
+# ---------------------------------------------------------------------------
+
+def _write_variants_file(path: Path, n: int) -> Path:
+    """Write a JSONL file with `n` minimal-but-valid variant entries."""
+    lines = []
+    for i in range(n):
+        lines.append(json.dumps({
+            "hypothesis": f"variant {i}",
+            "expected_metric": f"combined +0.00{i}",
+            "changed_files": ["student_finetune/train_v2.py"],
+            "risks": ["regress recall@1"],
+            "rollback": "combined < incumbent - 0.005",
+            "patch": f"--- a/x\n+++ b/x\n@@\n+v{i}\n",
+        }))
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def test_propose_variants_writes_a_plus_n_with_one_round_id(tmp_history, tmp_path):
+    vfile = _write_variants_file(tmp_path / "v.jsonl", n=4)
+    rc = tournament.cmd_propose("student_v2", "sweep", baseline_only=False, variants=vfile)
+    assert rc == 0
+    candidates = list(read_history(tmp_history))
+    assert len(candidates) == 5  # 1 A + 4 variants
+    kinds = [c.kind for c in candidates]
+    assert kinds.count("A") == 1
+    assert kinds.count("B") == 4
+    assert "AB" not in kinds  # variants mode must not auto-synthesize AB
+    rids = {c.round_id for c in candidates}
+    assert len(rids) == 1  # all share one round
+
+
+def test_propose_variants_fills_parent_incumbent_id(tmp_history, tmp_path):
+    vfile = _write_variants_file(tmp_path / "v.jsonl", n=2)
+    rc = tournament.cmd_propose("student_v2", "sweep", baseline_only=False, variants=vfile)
+    assert rc == 0
+    candidates = list(read_history(tmp_history))
+    a = next(c for c in candidates if c.kind == "A")
+    bs = [c for c in candidates if c.kind == "B"]
+    assert all(b.parent_incumbent_id == a.id for b in bs)
+
+
+def test_propose_variants_distinct_candidate_ids(tmp_history, tmp_path):
+    vfile = _write_variants_file(tmp_path / "v.jsonl", n=3)
+    tournament.cmd_propose("student_v2", "sweep", baseline_only=False, variants=vfile)
+    bs = [c for c in read_history(tmp_history) if c.kind == "B"]
+    assert len({b.id for b in bs}) == 3  # uniqueness by id
+
+
+def test_propose_variants_and_baseline_only_mutually_exclusive(tmp_history, tmp_path):
+    vfile = _write_variants_file(tmp_path / "v.jsonl", n=1)
+    rc = tournament.cmd_propose("student_v2", "x", baseline_only=True, variants=vfile)
+    assert rc == 2  # programmatic guard
+
+
+def test_cli_variants_and_baseline_only_argparse_error(tmp_history, tmp_path, capsys):
+    vfile = _write_variants_file(tmp_path / "v.jsonl", n=1)
+    with pytest.raises(SystemExit):
+        tournament.main([
+            "propose", "--target", "student_v2",
+            "--baseline-only", "--variants", str(vfile),
+        ])
+    err = capsys.readouterr().err
+    assert "not allowed with" in err or "mutually exclusive" in err
+
+
+def test_propose_variants_empty_file_writes_only_a_with_warning(tmp_history, tmp_path, capsys):
+    vfile = tmp_path / "v.jsonl"
+    vfile.write_text("\n\n")  # only blanks
+    rc = tournament.cmd_propose("student_v2", "x", baseline_only=False, variants=vfile)
+    assert rc == 0
+    candidates = list(read_history(tmp_history))
+    assert len(candidates) == 1 and candidates[0].kind == "A"
+    assert "no entries" in capsys.readouterr().err
+
+
 def test_outcome_roundtrip(tmp_history):
     o = Outcome(
         candidate_id="abc",
@@ -105,6 +183,36 @@ def test_dry_run_pipeline_writes_outcome_no_decision(tmp_history, monkeypatch):
     # No decision because we short-circuited promote
     decisions = list(read_decisions(tmp_history))
     assert decisions == []
+
+
+def test_run_round_variants_dry_run_writes_a_plus_n_outcomes(tmp_history, tmp_path):
+    """run-round --variants in dry-run mode runs A + N candidates end-to-end."""
+    vfile = _write_variants_file(tmp_path / "v.jsonl", n=3)
+    rc = tournament.cmd_run_round(
+        "student_v2", "sweep dry-run",
+        epochs=None, baseline_only=False, dry_run=True, variants=vfile,
+    )
+    assert rc == 0
+    outcomes = list(read_outcomes(tmp_history))
+    assert len(outcomes) == 4  # 1 A + 3 variants
+    assert all(o.status == "noop" for o in outcomes)
+    # All outcomes share one round_id
+    assert len({o.round_id for o in outcomes}) == 1
+    # Candidates: 1 A + 3 B; no AB synthesis
+    candidates = list(read_history(tmp_history))
+    kinds = sorted(c.kind for c in candidates)
+    assert kinds == ["A", "B", "B", "B"]
+
+
+def test_run_round_variants_baseline_only_argparse_error(tmp_history, tmp_path, capsys):
+    vfile = _write_variants_file(tmp_path / "v.jsonl", n=1)
+    with pytest.raises(SystemExit):
+        tournament.main([
+            "run-round", "--target", "student_v2",
+            "--baseline-only", "--variants", str(vfile), "--dry-run",
+        ])
+    err = capsys.readouterr().err
+    assert "not allowed with" in err or "mutually exclusive" in err
 
 
 def test_promote_with_synthetic_outcomes_writes_decision(tmp_history):

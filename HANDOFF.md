@@ -148,6 +148,47 @@ To run a hand-crafted patch outside the autoreason loop:
 .venv/bin/python -m research_loop.tournament promote --round <round_id>
 ```
 
+### 2c-bis. Fixed sweep via `--variants` (issue #9 Goal 3)
+
+Use this when you want a grid of N hand-specified patches against the
+incumbent A — e.g. "sweep PRODUCTNESS_CLS_WEIGHT in {0.0, 0.01, 0.05, 0.1}".
+Distinct from `autoreason`, which lets the LLM propose patches; this is
+purely operator-driven and useful for hyperparameter searches where the
+search space is discrete and known.
+
+```bash
+# One-shot: A + 4 variants run end-to-end → ranked → promoted
+.venv/bin/python -m research_loop.tournament run-round --target student_v2 \
+    --variants research_loop/sweeps/productness_weight.jsonl
+
+# Or split: emit candidates, run them individually, promote at the end
+.venv/bin/python -m research_loop.tournament propose --target student_v2 \
+    --variants research_loop/sweeps/productness_weight.jsonl
+.venv/bin/python -m research_loop.tournament run --candidate <id>   # × N+1
+.venv/bin/python -m research_loop.tournament promote --round <round_id>
+```
+
+Variants file format: JSONL, one variant per line, each with required fields
+`hypothesis`, `expected_metric`, `changed_files`, `risks`, `rollback`,
+`patch` (unified diff applied via `git apply`). See
+`research_loop/sweeps/productness_weight.jsonl` for a working example
+(uses `git apply --check`-verified diffs against `train_v2.py`).
+
+**Decision rule for the productness-weight sweep** (per `MEMORY.md` →
+metric strategy): `combined_metric` stays retrieval-only. Pick the largest
+`w` whose `combined_metric` stays within 0.5% of A. Reject any `w` where
+`productness_neg_acc` regresses below A by more than the guardrail
+tolerance (`promote.decide()` enforces this automatically; you only need
+to read the printed Decision). Two `w` tied on `combined_metric`? Pick the
+**lower** one — productness is a deploy gate, not a primary objective.
+
+**Time budget**: each variant runs at full `DEFAULT_EPOCHS`. A 5-variant
+sweep is roughly 5× the cost of a single training run. The same
+`--max-seconds-per-candidate` time-budget primitive is **not** wired into
+`run-round` today (only `autoreason` honors it); for sweeps that may
+overrun, use `propose --variants` then `run --candidate <id> --epochs N`
+on each one with N tuned to your budget.
+
 ### Cache / adapter notes (apply to all 3 modes)
 
 Stage-1 (DINO) writes the LoRA adapter to `dino_finetune/output/best_adapter/`. Stage-2 (student) reads it from the same path. The teacher embedding cache is keyed on the adapter's SHA-256 prefix (`workspace/output/teacher_cache/dinov3_ft/<adapter_sha>/`) — a teacher retrain → new sha → fresh cache subdir built automatically. No `mv`, no `rm -rf`, no swap. Student first-epoch is ~14 min (cache warmup); subsequent epochs ~5–8 min.

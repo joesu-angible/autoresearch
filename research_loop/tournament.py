@@ -56,6 +56,7 @@ from research_loop.promote import (
     is_deployable,
 )
 from research_loop.targets import DinoV2Target, StudentV2Target
+from research_loop.variants import VariantSpec, load_variants
 
 HISTORY_PATH = Path(__file__).resolve().parent / "history.jsonl"
 
@@ -117,9 +118,34 @@ def _make_placeholder_ab(target: str, round_id: str, b: Candidate, parent_id: st
     )
 
 
-def cmd_propose(target: str, hypothesis: str, baseline_only: bool, round_id: str | None = None) -> int:
+def _make_variant_candidate(target: str, round_id: str, parent_id: str, spec: VariantSpec) -> Candidate:
+    """Materialize one operator-supplied variant into a kind='B' Candidate.
+
+    Each variant in a sweep round is kind='B'; uniqueness is by id, not kind.
+    """
+    return Candidate(
+        kind="B",
+        target=target,
+        round_id=round_id,
+        hypothesis=spec["hypothesis"],
+        expected_metric=spec["expected_metric"],
+        changed_files=list(spec["changed_files"]),
+        risks=list(spec["risks"]),
+        rollback=spec["rollback"],
+        patch=spec["patch"],
+        parent_incumbent_id=parent_id,
+    )
+
+
+def cmd_propose(target: str, hypothesis: str, baseline_only: bool,
+                round_id: str | None = None, variants: Path | None = None) -> int:
     if target not in TARGETS:
         print(f"Unknown target: {target}", file=sys.stderr)
+        return 2
+    if variants is not None and baseline_only:
+        # argparse's mutually_exclusive_group catches the CLI case; this guards
+        # programmatic callers.
+        print("--variants and --baseline-only are mutually exclusive", file=sys.stderr)
         return 2
     rid = round_id or new_round_id()
     a = _make_baseline_a(target, rid, hypothesis)
@@ -127,6 +153,16 @@ def cmd_propose(target: str, hypothesis: str, baseline_only: bool, round_id: str
     print(f"Round {rid} proposed for target={target}:")
     print(f"  A  id={a.id}  {a.hypothesis[:60]}")
     if baseline_only:
+        return 0
+    if variants is not None:
+        specs = load_variants(variants)
+        if not specs:
+            print(f"  warning: variants file {variants} contained no entries", file=sys.stderr)
+            return 0
+        for spec in specs:
+            cand = _make_variant_candidate(target, rid, parent_id=a.id, spec=spec)
+            append_history(HISTORY_PATH, cand)
+            print(f"  B  id={cand.id}  {cand.hypothesis[:60]}")
         return 0
     b = _make_placeholder_b(target, rid, hypothesis, parent_id=a.id)
     ab = _make_placeholder_ab(target, rid, b, parent_id=a.id)
@@ -849,8 +885,11 @@ def main(argv: list[str] | None = None) -> int:
     p_propose = sub.add_parser("propose", help="emit A/B/AB candidates for a new round")
     p_propose.add_argument("--target", required=True, choices=list(TARGETS))
     p_propose.add_argument("--hypothesis", default="")
-    p_propose.add_argument("--baseline-only", action="store_true",
-                           help="emit only A (incumbent); skip B/AB placeholders")
+    propose_mode = p_propose.add_mutually_exclusive_group()
+    propose_mode.add_argument("--baseline-only", action="store_true",
+                              help="emit only A (incumbent); skip B/AB placeholders")
+    propose_mode.add_argument("--variants", type=Path, default=None,
+                              help="JSONL file: emit A + one Candidate per line (sweep mode)")
 
     p_rank = sub.add_parser("rank", help="judge-rank candidates")
     p_rank.add_argument("--round", default=None, help="filter by round_id")
@@ -917,7 +956,9 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     if args.cmd == "propose":
-        return cmd_propose(args.target, args.hypothesis, baseline_only=args.baseline_only)
+        return cmd_propose(args.target, args.hypothesis,
+                           baseline_only=args.baseline_only,
+                           variants=args.variants)
     if args.cmd == "rank":
         return cmd_rank(args.round)
     if args.cmd == "run":

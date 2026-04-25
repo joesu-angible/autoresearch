@@ -349,10 +349,20 @@ def cmd_autoreason(
     max_seconds_per_candidate: float | None,
     hypothesis_seed: str,
     dry_run: bool,
+    # Global defaults (inherited by all three roles unless overridden below)
     llm_cli: str | None = None,
     llm_model: str | None = None,
     llm_provider: str = "auto",
-    agent_client_factory=None,
+    # Per-role overrides — None means inherit the global default. Per
+    # autoreason paper §7.3, mixing models across roles is well-supported
+    # (e.g. cheap author + strong judge); we expose the same flexibility.
+    critic_cli: str | None = None,
+    critic_model: str | None = None,
+    author_cli: str | None = None,
+    author_model: str | None = None,
+    synthesizer_cli: str | None = None,
+    synthesizer_model: str | None = None,
+    agent_client_factory=None,  # test injection; takes (role_name) → LLMClient
 ) -> int:
     """Fully autonomous autoreason loop.
 
@@ -362,11 +372,12 @@ def cmd_autoreason(
     A wins or after `max_passes` total passes.
 
     LLM access is via subprocess to a local CLI (hermes / claude / codex).
-    `llm_cli` defaults to AUTORESEARCH_LLM_CLI env or "hermes". `llm_model`
-    is passed through to whichever CLI is selected.
+    Each role can use a different CLI and/or model — autoreason paper §7.3
+    showed mixed-model setups (cheap author + strong judge) are first-class.
+    Per-role values default to the global llm_cli / llm_model / llm_provider.
 
     `agent_client_factory` is injected for testing — production callers pass
-    None and we construct a real CLI-backed client.
+    None and we construct a real CLI-backed client per role.
     """
     if target not in TARGETS:
         print(f"Unknown target: {target}", file=sys.stderr)
@@ -380,22 +391,36 @@ def cmd_autoreason(
         )
         return 2
 
+    # Resolve per-role config (fall back to globals)
+    role_config = {
+        "critic":       (critic_cli       or llm_cli, critic_model       or llm_model),
+        "author":       (author_cli       or llm_cli, author_model       or llm_model),
+        "synthesizer":  (synthesizer_cli  or llm_cli, synthesizer_model  or llm_model),
+    }
+
     if agent_client_factory is None:
         from research_loop.agents.client import make_llm_client
-        agent_client_factory = lambda: make_llm_client(
-            llm_cli, model=llm_model, provider=llm_provider,
-        )
-    client = agent_client_factory()
-    print(f"  LLM client: {getattr(client, 'name', type(client).__name__)}"
-          + (f" model={llm_model}" if llm_model else ""))
+        def _factory(role: str):
+            cli, model = role_config[role]
+            return make_llm_client(cli, model=model, provider=llm_provider)
+        agent_client_factory = _factory
+
+    critic_client = agent_client_factory("critic")
+    author_client = agent_client_factory("author")
+    synthesizer_client = agent_client_factory("synthesizer")
+    for role, c in (("critic", critic_client), ("author", author_client),
+                    ("synthesizer", synthesizer_client)):
+        cli, model = role_config[role]
+        print(f"  {role:12s} → {getattr(c, 'name', type(c).__name__)}"
+              + (f" model={model}" if model else ""))
 
     from research_loop.agents.author import AuthorBAgent
     from research_loop.agents.critic import CriticAgent
     from research_loop.agents.synthesizer import SynthesizerAgent
 
-    critic = CriticAgent(client)
-    author = AuthorBAgent(client)
-    synthesizer = SynthesizerAgent(client)
+    critic = CriticAgent(critic_client)
+    author = AuthorBAgent(author_client)
+    synthesizer = SynthesizerAgent(synthesizer_client)
 
     consecutive_a_wins = 0
     last_round_id: str | None = None
@@ -582,11 +607,25 @@ def main(argv: list[str] | None = None) -> int:
     p_auto.add_argument("--dry-run", action="store_true",
                         help="skip subprocess training; record noop outcomes")
     p_auto.add_argument("--llm-cli", choices=["hermes", "claude", "codex"], default=None,
-                        help="which local LLM CLI to invoke (default: AUTORESEARCH_LLM_CLI env or 'hermes')")
+                        help="default CLI for all 3 roles (env: AUTORESEARCH_LLM_CLI; default 'hermes')")
     p_auto.add_argument("--llm-model", default=None,
-                        help="model name passed to the selected CLI (e.g. 'anthropic/claude-sonnet-4' for hermes)")
+                        help="default model for all 3 roles (e.g. 'anthropic/claude-sonnet-4' for hermes)")
     p_auto.add_argument("--llm-provider", default="auto",
                         help="provider routing for hermes (ignored by claude/codex); default 'auto'")
+    # Per-role overrides — autoreason paper §7.3 supports mixed-model setups
+    # (cheap author + strong judge). Each defaults to the global --llm-cli/--llm-model.
+    p_auto.add_argument("--critic-cli", choices=["hermes", "claude", "codex"], default=None,
+                        help="override CLI for the Critic role (analytical; benefits from a strong model)")
+    p_auto.add_argument("--critic-model", default=None,
+                        help="override model for the Critic role")
+    p_auto.add_argument("--author-cli", choices=["hermes", "claude", "codex"], default=None,
+                        help="override CLI for the Author B role (creative patch generation)")
+    p_auto.add_argument("--author-model", default=None,
+                        help="override model for the Author B role")
+    p_auto.add_argument("--synthesizer-cli", choices=["hermes", "claude", "codex"], default=None,
+                        help="override CLI for the Synthesizer role (conservative AB)")
+    p_auto.add_argument("--synthesizer-model", default=None,
+                        help="override model for the Synthesizer role")
 
     args = p.parse_args(argv)
 
@@ -612,6 +651,12 @@ def main(argv: list[str] | None = None) -> int:
             llm_cli=args.llm_cli,
             llm_model=args.llm_model,
             llm_provider=args.llm_provider,
+            critic_cli=args.critic_cli,
+            critic_model=args.critic_model,
+            author_cli=args.author_cli,
+            author_model=args.author_model,
+            synthesizer_cli=args.synthesizer_cli,
+            synthesizer_model=args.synthesizer_model,
         )
     return 2
 

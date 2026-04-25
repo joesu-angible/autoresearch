@@ -89,23 +89,27 @@ def fake_repo(monkeypatch, tmp_path: Path) -> Path:
 
 
 def _mock_agent_client_factory():
-    """Returns an AgentClient stub whose .call() returns role-appropriate canned text.
+    """Returns a per-role factory: cmd_autoreason calls factory("critic") etc.
 
-    The agents call `client.call(system, user)`. We dispatch on substring of
-    the system prompt so the same client serves all three roles.
+    Each role gets its own MagicMock so we can verify they're independent.
+    All three return canned role-appropriate text; the agents call
+    client.call(system, user) and we dispatch by system-prompt substring.
     """
-    client = MagicMock()
-    def call_fn(system, user, *, temperature=0.8, max_tokens=None):
-        s = system.lower()
-        if "identify concrete problems" in s:
-            return CRITIC_RAW
-        if "produce a unified diff that addresses" in s:
-            return AUTHOR_B_RAW
-        if "conservative synthesis" in s:
-            return SYNTH_RAW
-        raise AssertionError(f"Unrecognized system prompt: {system[:80]}")
-    client.call.side_effect = call_fn
-    return lambda: client
+    def make_client(role: str):
+        client = MagicMock()
+        def call_fn(system, user, *, temperature=0.8, max_tokens=None, timeout=None):
+            s = system.lower()
+            if "identify concrete problems" in s:
+                return CRITIC_RAW
+            if "produce a unified diff that addresses" in s:
+                return AUTHOR_B_RAW
+            if "conservative synthesis" in s:
+                return SYNTH_RAW
+            raise AssertionError(f"Unrecognized system prompt: {system[:80]}")
+        client.call.side_effect = call_fn
+        client.name = f"mock-{role}"
+        return client
+    return make_client
 
 
 def _patch_adapter_train(scripted_outcomes: list[dict]):
@@ -323,3 +327,39 @@ def test_autoreason_dry_run_skips_dirty_check(history_in_tmp, fake_repo, monkeyp
     )
     # At minimum, the critic should have run
     assert len(list(read_critiques(history_in_tmp))) == 1
+
+
+def test_autoreason_per_role_factory_called_with_each_role(history_in_tmp, fake_repo, monkeypatch):
+    """Per-role overrides: each role's factory call gets its own role string,
+    so callers can route Critic / Author / Synthesizer to different CLIs/models.
+    """
+    from research_loop.targets._base import TrainOutcome
+    from research_loop.targets.student_v2 import StudentV2Target
+
+    def fake_train(self, candidate, max_epochs=None, dry_run=False, log_path=None, max_seconds=None):
+        return TrainOutcome(
+            candidate_id=candidate.id, metrics={}, elapsed_seconds=0.0,
+            status="noop", log_path=Path("/dev/null"),
+            metrics_json_path=self.METRICS_JSON, return_code=0,
+        )
+    monkeypatch.setattr(StudentV2Target, "train", fake_train)
+    monkeypatch.setattr(StudentV2Target, "log_row", _stub_log_row)
+    monkeypatch.setattr(StudentV2Target, "METRICS_JSON", fake_repo / "metrics_final_v2.json")
+
+    # Per-role tracker — record which roles got which factory call
+    invocations: list[str] = []
+    def factory(role: str):
+        invocations.append(role)
+        # Reuse the canned-response client logic
+        return _mock_agent_client_factory()(role)
+
+    tournament.cmd_autoreason(
+        "student_v2",
+        max_passes=1, convergence=2,
+        max_seconds_per_candidate=None,
+        hypothesis_seed="test", dry_run=True,
+        agent_client_factory=factory,
+    )
+
+    # Factory must be called once per role with the role name
+    assert sorted(invocations) == ["author", "critic", "synthesizer"]

@@ -180,6 +180,8 @@ Per project decision, autoreason calls a local CLI (`hermes`, `claude`, or `code
 | `claude` | `--llm-cli claude` | `--model claude-sonnet-4-6` |
 | `codex` | `--llm-cli codex` | `--model gpt-5` (passed via `codex exec -c model=...`) |
 
+Hermes routes through 21 providers (`auto`, `openrouter`, `nous`, `openai-codex`, `copilot`, `anthropic`, `gemini`, `xai`, `ollama-cloud`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `stepfun`, `minimax`, `kilocode`, `xiaomi`, `arcee`, `nvidia`, …). Pick via `--llm-provider <name>`.
+
 Selection order: explicit `--llm-cli` flag → `AUTORESEARCH_LLM_CLI` env var → default `hermes`.
 
 ```bash
@@ -195,7 +197,36 @@ Selection order: explicit `--llm-cli` flag → `AUTORESEARCH_LLM_CLI` env var �
 .venv/bin/python -m research_loop.tournament autoreason \
     --target student_v2 --max-passes 1 --dry-run \
     --llm-cli codex
+
+# hermes routing through Gemini
+.venv/bin/python -m research_loop.tournament autoreason \
+    --target student_v2 --max-passes 1 --dry-run \
+    --llm-cli hermes --llm-provider gemini --llm-model gemini-2.0-flash-thinking-exp
 ```
+
+### 2d-bis. Mixed-model setups (per-role overrides)
+
+Autoreason paper §7.3 (Judge Ablation) showed that pairing a cheap author with a strong judge still beats single-pass — autoreason's structure provides "a weaker form of external evaluation" even when models differ across roles. Same flexibility is exposed here:
+
+```bash
+# Strong Critic (analytical), cheap Author (creative volume), conservative Synthesizer
+.venv/bin/python -m research_loop.tournament autoreason \
+    --target student_v2 --max-passes 15 --convergence 2 \
+    --max-seconds-per-candidate 9000 \
+    --critic-cli claude        --critic-model claude-opus-4-7 \
+    --author-cli hermes        --author-model anthropic/claude-haiku-4-5 \
+    --synthesizer-cli claude   --synthesizer-model claude-sonnet-4-6
+```
+
+Each role flag pair (`--{role}-cli` + `--{role}-model`) overrides the global `--llm-cli` / `--llm-model`. Roles you don't specify inherit the default. Three role keys: `critic`, `author`, `synthesizer`.
+
+Why mix:
+
+- **Critic** is analytical — finds problems in code + history. Benefits from a strong reasoning model (Opus / Gemini Pro).
+- **Author** is creative — generates patches at temperature 0.8. A cheap, fast model can produce diverse candidates inexpensively (the tournament's promotion guardrails reject bad ones anyway).
+- **Synthesizer** is conservative — combines A and B at half-strength. A balanced model (Sonnet 4.6) is often best.
+
+If you don't care about mixing, omit the per-role flags and everything uses `--llm-cli` / `--llm-model`.
 
 ### 2e. Real-LLM smoke (T8 — pre-flight before launching autoreason)
 

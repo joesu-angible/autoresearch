@@ -116,8 +116,144 @@ COMMODITY_MAX_SAMPLES = 20000       # Cap commodity (full 30k overwhelms product
 # V2 feature flags
 USE_STRONG_AUG = True
 
-# V2 output (isolated from v1)
-OUTPUT_DIR = "/data/training/reid/workspace/output/distill_final_lcnet050_v2"
+# V2 productness CLS branch (issue #5) — ON by default. Per project decision
+# (2026-04-25), all future models must ship with productness; the flag is kept
+# only as a debugging escape hatch / for proving the V1 path is unaffected.
+USE_PRODUCTNESS_CLS = True
+PRODUCTNESS_CLS_WEIGHT = 0.02
+PRODUCTNESS_HEAD_HIDDEN = 256
+PRODUCTNESS_VAL_HOLDOUT_PATH = (
+    Path(__file__).resolve().parent / "productness_val_paths.txt"
+)
+
+# V2 output (isolated from v1) — falls back to local workspace if /data is unavailable
+_DATA_WORKSPACE = Path("/data/training/reid/workspace/output")
+_LOCAL_WORKSPACE = Path(__file__).resolve().parent.parent / "workspace" / "output"
+_WORKSPACE_BASE = (
+    _DATA_WORKSPACE if _DATA_WORKSPACE.parent.exists() and _DATA_WORKSPACE.parent.is_dir()
+    and _DATA_WORKSPACE.parent.stat().st_mode & 0o200  # writable
+    else _LOCAL_WORKSPACE
+)
+OUTPUT_DIR = str(_WORKSPACE_BASE / "distill_final_lcnet050_v2")
+TEACHER_CACHE_BASE = str(_WORKSPACE_BASE / "teacher_cache")
+
+
+# ============================================================
+# V2 Productness CLS branch
+# ============================================================
+
+class ProductnessLCNet(LCNet):
+    """LCNet + auxiliary binary productness head on the shared 1280-d summary feature.
+
+    `encode()` is inherited unchanged (embedding-only, L2-normalized) so retrieval
+    behavior is identical to V1 LCNet. Productness logit is computed only at training
+    time via `predict_productness_logits`, called from `run_train_epoch` when the
+    productness kwargs are wired in train_v2.main().
+    """
+
+    LCNET_SUMMARY_DIM = 1280
+
+    def __init__(self, *args, productness_hidden: int = PRODUCTNESS_HEAD_HIDDEN, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.productness_head = nn.Sequential(
+            nn.Linear(self.LCNET_SUMMARY_DIM, productness_hidden),
+            nn.BatchNorm1d(productness_hidden),
+            nn.Hardswish(),
+            nn.Dropout(p=0.1),
+            nn.Linear(productness_hidden, 1),
+        )
+
+    def predict_productness_logits(self, summary: torch.Tensor) -> torch.Tensor:
+        """Forward summary [B,1280] → logit [B]. summary comes from forward_features."""
+        return self.productness_head(summary).squeeze(-1)
+
+
+def load_productness_val_paths(path: Path) -> set[str]:
+    """Load the deterministic productness validation holdout list.
+
+    Returns an empty set if the file is missing — productness eval will skip
+    quietly. Regenerate via `python tools/build_productness_val.py`.
+    """
+    if not path.exists():
+        logger.warning(
+            f"productness val holdout file not found: {path}. "
+            f"Run `python student_finetune/tools/build_productness_val.py` to generate it."
+        )
+        return set()
+    return {line.strip() for line in path.read_text().splitlines() if line.strip()}
+
+
+def collect_negative_paths(negatives_root: str) -> set[str]:
+    """All paths under REID_NEGATIVES — the productness target=0 source."""
+    img_exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".JPEG"}
+    root = Path(negatives_root)
+    if not root.exists():
+        return set()
+    return {str(p) for p in root.rglob("*") if p.suffix.lower() in img_exts}
+
+
+@torch.no_grad()
+def eval_productness(
+    model: "ProductnessLCNet",
+    val_paths: list[str],
+    negative_paths: set[str],
+    transform,
+    device: torch.device,
+    batch_size: int = 64,
+) -> dict[str, float]:
+    """Evaluate productness head on the held-out val list.
+
+    Returns {loss, acc, pos_acc, neg_acc, n}. Logged separately — NOT folded into
+    the retrieval `combined` metric.
+    """
+    if not val_paths:
+        return {"loss": 0.0, "acc": 0.0, "pos_acc": 0.0, "neg_acc": 0.0, "n": 0}
+
+    model.eval()
+    total_loss = 0.0
+    correct = pos_correct = neg_correct = 0
+    pos_total = neg_total = 0
+    n_batches = 0
+
+    for start in range(0, len(val_paths), batch_size):
+        batch = val_paths[start : start + batch_size]
+        imgs = []
+        targets = []
+        for p in batch:
+            try:
+                img = transform(Image.open(p).convert("RGB"))
+            except Exception:
+                continue
+            imgs.append(img)
+            targets.append(0.0 if p in negative_paths else 1.0)
+        if not imgs:
+            continue
+        x = torch.stack(imgs).to(device)
+        y = torch.tensor(targets, device=device, dtype=torch.float32)
+        _, summary = model.forward_features(x)
+        logits = model.predict_productness_logits(summary)
+        loss = functional.binary_cross_entropy_with_logits(logits, y)
+        total_loss += float(loss.item())
+        n_batches += 1
+        pred = (logits > 0).float()
+        correct += int((pred == y).sum().item())
+        pos_mask = y > 0.5
+        neg_mask = ~pos_mask
+        pos_total += int(pos_mask.sum().item())
+        neg_total += int(neg_mask.sum().item())
+        if pos_mask.any():
+            pos_correct += int((pred[pos_mask] == 1.0).sum().item())
+        if neg_mask.any():
+            neg_correct += int((pred[neg_mask] == 0.0).sum().item())
+
+    n_total = pos_total + neg_total
+    return {
+        "loss": total_loss / max(n_batches, 1),
+        "acc": correct / max(n_total, 1),
+        "pos_acc": pos_correct / max(pos_total, 1) if pos_total else 0.0,
+        "neg_acc": neg_correct / max(neg_total, 1) if neg_total else 0.0,
+        "n": n_total,
+    }
 
 
 # ============================================================
@@ -424,6 +560,18 @@ def load_checkpoint(path: Path, model, optimizer, scheduler, scaler, arc_margin,
 
 def main(max_epochs: int, patience: int, swa_epochs: int, resume: bool) -> None:
     set_seed(SEED)
+
+    # Redirect teacher cache_dir to local workspace if the upstream /data path
+    # is not writable (e.g. on dev hosts where /data/training/reid/workspace
+    # doesn't exist). Additive override; V1 trainers using /data still work.
+    _orig_cache = TEACHER_REGISTRY[TEACHER]["cache_dir"]
+    if not Path(_orig_cache).parent.parent.exists() or not (
+        Path(_orig_cache).parent.parent.stat().st_mode & 0o200
+    ):
+        new_cache = str(Path(TEACHER_CACHE_BASE) / TEACHER)
+        Path(new_cache).mkdir(parents=True, exist_ok=True)
+        TEACHER_REGISTRY[TEACHER]["cache_dir"] = new_cache
+        logger.info(f"Teacher cache redirected: {_orig_cache} -> {new_cache}")
     device = torch.device(DEVICE if torch.cuda.is_available() else "cpu")
     out_dir = Path(OUTPUT_DIR)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -477,12 +625,33 @@ def main(max_epochs: int, patience: int, swa_epochs: int, resume: bool) -> None:
     logger.info(f"Teacher: {TEACHER}, dim={teacher_dims[TEACHER]}")
 
     # --- Model ---
-    model = LCNet(
+    _model_cls = ProductnessLCNet if USE_PRODUCTNESS_CLS else LCNet
+    model = _model_cls(
         scale=LCNET_SCALE, se_start_block=SE_START_BLOCK,
         se_reduction=SE_REDUCTION, activation=ACTIVATION,
         kernel_sizes=KERNEL_SIZES, embedding_dim=EMBEDDING_DIM,
         device=str(device), teacher_dims=teacher_dims,
     ).to(device)
+    if USE_PRODUCTNESS_CLS:
+        logger.info(
+            f"Productness CLS branch ON: weight={PRODUCTNESS_CLS_WEIGHT}, "
+            f"hidden={PRODUCTNESS_HEAD_HIDDEN}"
+        )
+
+    # --- Productness data plumbing (only when flag is on) ---
+    productness_negative_paths: set[str] = set()
+    productness_val_paths: list[str] = []
+    if USE_PRODUCTNESS_CLS:
+        all_neg = collect_negative_paths(REID_NEGATIVES)
+        held = load_productness_val_paths(PRODUCTNESS_VAL_HOLDOUT_PATH)
+        # Train side: negatives that are NOT held out
+        productness_negative_paths = all_neg - held
+        # Val side: keep only files that exist in either products or negatives
+        productness_val_paths = sorted(held)
+        logger.info(
+            f"Productness data: {len(productness_negative_paths)} train negatives, "
+            f"{len(productness_val_paths)} val holdout paths"
+        )
 
     if USE_PRETRAINED:
         load_pretrained_lcnet(model, LCNET_SCALE)
@@ -510,6 +679,8 @@ def main(max_epochs: int, patience: int, swa_epochs: int, resume: bool) -> None:
     head_params = proj_params + list(model.conv_head.parameters()) + list(model.head_act.parameters())
     if arc_margin is not None:
         head_params += list(arc_margin.parameters())
+    if USE_PRODUCTNESS_CLS and isinstance(model, ProductnessLCNet):
+        head_params += list(model.productness_head.parameters())
 
     optimizer = torch.optim.AdamW(
         [
@@ -575,6 +746,9 @@ def main(max_epochs: int, patience: int, swa_epochs: int, resume: bool) -> None:
             wl_centroid_ema=wl_centroid_ema,
             backbone_unfrozen=True,
             save_first_batch_path=out_dir if epoch == 0 else None,
+            productness_head=(model.productness_head if USE_PRODUCTNESS_CLS else None),
+            productness_negative_paths=(productness_negative_paths if USE_PRODUCTNESS_CLS else None),
+            productness_weight=(PRODUCTNESS_CLS_WEIGHT if USE_PRODUCTNESS_CLS else 0.0),
         )
         epoch_time = time.time() - t0
 
@@ -584,6 +758,27 @@ def main(max_epochs: int, patience: int, swa_epochs: int, resume: bool) -> None:
             f"loss={stats.loss:.4f} distill={stats.distill_loss:.4f} "
             f"arc={stats.arc_loss:.4f} cosine={stats.mean_cosine:.4f}{arc_str} | {epoch_time:.1f}s"
         )
+        if USE_PRODUCTNESS_CLS:
+            logger.info(
+                f"  Productness (train): loss={stats.productness_loss:.4f} "
+                f"acc={stats.productness_acc:.4f} "
+                f"pos_acc={stats.productness_pos_acc:.4f} neg_acc={stats.productness_neg_acc:.4f} "
+                f"(n={stats.productness_n})"
+            )
+            val_metrics = eval_productness(
+                model=model,
+                val_paths=productness_val_paths,
+                negative_paths=collect_negative_paths(REID_NEGATIVES),
+                transform=build_val_transform(MODEL_NAME, IMAGE_SIZE),
+                device=device,
+                batch_size=BATCH_SIZE,
+            )
+            logger.info(
+                f"  Productness (val):   loss={val_metrics['loss']:.4f} "
+                f"acc={val_metrics['acc']:.4f} "
+                f"pos_acc={val_metrics['pos_acc']:.4f} neg_acc={val_metrics['neg_acc']:.4f} "
+                f"(n={val_metrics['n']})"
+            )
 
         # SWA
         if epoch >= swa_start:
@@ -720,6 +915,14 @@ def main(max_epochs: int, patience: int, swa_epochs: int, resume: bool) -> None:
         "early_stopped": no_improve_count >= patience,
         "elapsed_seconds": round(elapsed, 1),
     }
+    if USE_PRODUCTNESS_CLS:
+        metrics.update({
+            "productness_loss": stats.productness_loss,
+            "productness_acc": stats.productness_acc,
+            "productness_pos_acc": stats.productness_pos_acc,
+            "productness_neg_acc": stats.productness_neg_acc,
+            "productness_n": stats.productness_n,
+        })
     with open(out_dir / "metrics_final_v2.json", "w") as f:
         json.dump(metrics, f, indent=2)
 

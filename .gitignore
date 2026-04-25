@@ -29,3 +29,8 @@ metrics.json
 metrics_*.json
 run.log
 run_*.log
+
+# Generated holdout list (regenerable via tools/build_productness_val.py; deterministic)
+student_finetune/productness_val_paths.txt
+research_loop/history.jsonl
+research_loop/tournament_results_v2.tsv

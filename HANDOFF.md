@@ -170,6 +170,26 @@ Epoch 30/30 | loss=... distill=... arc=... cosine=...
 V2 TRAINING COMPLETE
 ```
 
+### 2d. Real-LLM smoke (T8 — pre-flight before launching autoreason)
+
+Before kicking off a multi-hour autoreason run, verify the LLM round-trip works against your `ANTHROPIC_API_KEY`. This costs ~$0.05 (3 Sonnet 4.6 calls), takes ~30 seconds, and never touches the GPU:
+
+```bash
+ANTHROPIC_API_KEY=sk-... .venv/bin/python -m research_loop.tools.autoreason_smoke
+```
+
+What it verifies:
+
+- API key is reachable (env or `~/.hermes/.env`)
+- Critic returns a parseable Critique with a non-empty summary
+- Author B's diff passes `git apply --check` (or returns NO_PATCH)
+- Synthesizer's diff passes `git apply --check` (or returns NO_PATCH)
+- Working tree is unchanged after the smoke (`git apply --check` only, never applied)
+
+Run this once before any production `tournament autoreason` invocation. If the smoke fails, the autoreason loop will fail in the same place — but on a 10-hour run instead of 30 seconds.
+
+> **T8 status**: smoke script delivered (`research_loop/tools/autoreason_smoke.py`). The dev environment that built this PR has Claude Code OAuth but no raw `ANTHROPIC_API_KEY` exposed to the shell, so the manual verification has been deferred to the operator who launches the production run. Re-record the smoke output here once executed.
+
 ### 3. After the run — export ONNX + log to results_v2.tsv
 
 ```bash

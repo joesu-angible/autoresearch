@@ -395,12 +395,26 @@ def _write_run_summary(
     best_so_far: dict | None,
     latest_critique_summary: str,
     status: str,
+    config: dict | None = None,
 ) -> None:
-    """Atomic JSON dump consumed by `tournament status` and external bots.
+    """Atomic JSON dump consumed by `tournament status`, external bots,
+    and resume (issue #14).
 
     Atomic via temp + rename so a concurrent reader never sees a half-written file.
+
+    `config` is the autoreason invocation config (LLM CLI, models, budgets,
+    etc.) needed to resume the run after a crash. Persisted on first write
+    only — subsequent writes preserve the existing config block to keep it
+    immutable across the run's lifetime.
     """
     import json
+    summary = run_dir / "summary.json"
+    existing_config: dict | None = None
+    if summary.exists():
+        try:
+            existing_config = json.loads(summary.read_text()).get("config")
+        except json.JSONDecodeError:
+            existing_config = None
     payload = {
         "run_id": run_id,
         "target": target,
@@ -413,9 +427,9 @@ def _write_run_summary(
         "best_so_far": best_so_far,
         "latest_critique_summary": latest_critique_summary,
         "status": status,
+        "config": existing_config if existing_config is not None else config,
     }
     run_dir.mkdir(parents=True, exist_ok=True)
-    summary = run_dir / "summary.json"
     tmp = summary.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2))
     tmp.replace(summary)
@@ -564,6 +578,26 @@ def cmd_autoreason(
         sys.stdout, sys.stderr = _orig_stdout, _orig_stderr
         _log_fh.close()
 
+    # Config block persisted on first summary write; resume reads it back to
+    # restore the invocation when picking up after a crash (issue #14).
+    run_config = {
+        "target": target,
+        "max_passes": max_passes,
+        "convergence": convergence,
+        "max_seconds_per_candidate": max_seconds_per_candidate,
+        "hypothesis_seed": hypothesis_seed,
+        "dry_run": dry_run,
+        "llm_cli": llm_cli,
+        "llm_model": llm_model,
+        "llm_provider": llm_provider,
+        "critic_cli": critic_cli,
+        "critic_model": critic_model,
+        "author_cli": author_cli,
+        "author_model": author_model,
+        "synthesizer_cli": synthesizer_cli,
+        "synthesizer_model": synthesizer_model,
+    }
+
     def _status_dump(
         pass_index: int, status: str, latest_critique: str = "",
         last_decision_dict: dict | None = None, best: dict | None = None,
@@ -574,6 +608,7 @@ def cmd_autoreason(
             consecutive_a_wins=consecutive_a_wins, convergence=convergence,
             last_decision=last_decision_dict, best_so_far=best,
             latest_critique_summary=latest_critique, status=status,
+            config=run_config,
         )
 
     consecutive_a_wins = 0

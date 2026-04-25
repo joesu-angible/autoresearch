@@ -44,3 +44,7 @@ research_loop/tournament_results_v2.tsv
 workspace/
 RADIO/
 dino_finetune/output/
+
+# Reference material — NousResearch/autoreason repo + paper PDFs, used as
+# inspiration for research_loop's design but not part of this codebase.
+autoreason/

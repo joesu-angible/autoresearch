@@ -841,10 +841,33 @@ def cmd_autoreason(
             print(f"  running {cand.kind} ({cand.id})")
             adapter = TARGETS[target]()
             adapter.apply_patch(cand)  # validates V1-safety; no-op for A
-            # State-machine marker for resume (issue #14): written *after* the
-            # patch validates but *before* training starts. A crash after this
-            # point but before the matching Outcome below leaves the candidate
-            # detectable as unfinished via find_unfinished_candidates(run_id).
+
+            # Mid-apply guard (issue #14 follow-up): if the LLM-generated diff
+            # cannot apply (`git apply --check` fails), record a failed Outcome
+            # and move on — do NOT write outcome_started, since there is
+            # nothing to resume. Resume's find_unfinished_candidates would
+            # otherwise re-trigger the same broken `git apply` on every restart.
+            if cand.kind != "A" and cand.patch.strip():
+                check = subprocess.run(
+                    ["git", "apply", "--check"], input=cand.patch,
+                    cwd=REPO_ROOT, capture_output=True, text=True, check=False,
+                )
+                if check.returncode != 0:
+                    err = check.stderr.strip().splitlines()[-1] if check.stderr.strip() else "git apply --check failed"
+                    print(f"    apply_patch rejected: {err} → status=failed")
+                    append_history(HISTORY_PATH, Outcome(
+                        candidate_id=cand.id, round_id=round_id, target=target,
+                        status="failed", metrics={},
+                        elapsed_seconds=0.0, log_path="",
+                        metrics_json_path="",
+                    ))
+                    continue
+
+            # State-machine marker for resume (issue #14): written *after* all
+            # safety + apply checks have passed but *before* training starts.
+            # A crash after this point but before the matching Outcome below
+            # leaves the candidate detectable as unfinished via
+            # find_unfinished_candidates(run_id).
             append_history(HISTORY_PATH, OutcomeStartedRecord(
                 candidate_id=cand.id, round_id=round_id, target=target,
                 pass_index=pass_index, kind=cand.kind, run_id=run_id,

@@ -364,3 +364,75 @@ def test_resume_when_outcomes_done_but_no_decision_runs_promote(
     decisions = list(read_decisions(history_in_tmp))
     assert len(decisions) == 1
     assert decisions[0].round_id == rid
+
+
+def test_mid_apply_failure_writes_failed_outcome_and_continues(
+    history_in_tmp, runs_dir_in_tmp, fake_repo, monkeypatch
+):
+    """LLM produces a malformed diff: git apply --check fails. cmd_autoreason
+    must record status='failed' and move on — NOT write outcome_started (which
+    would make resume try to re-apply the same broken patch forever)."""
+    from research_loop.targets.student_v2 import StudentV2Target
+
+    # Override Author B and Synthesizer to emit BAD diffs (won't apply)
+    bad_diff_raw = """RATIONALE: stub.
+
+```diff
+--- a/student_finetune/train_v2.py
++++ b/student_finetune/train_v2.py
+@@ -42,1 +42,1 @@
+-NONEXISTENT LINE THAT WONT MATCH
++REPLACEMENT
+```
+"""
+
+    def bad_factory():
+        def make_client(role):
+            client = MagicMock()
+            def call_fn(system, user, *, temperature=0.8, max_tokens=None, timeout=None):
+                s = system.lower()
+                if "identify concrete problems" in s:
+                    return CRITIC_RAW
+                # Both Author B and Synthesizer emit non-applying diffs
+                return bad_diff_raw
+            client.call.side_effect = call_fn
+            client.name = f"mock-{role}"
+            return client
+        return make_client
+
+    # A succeeds; B and AB never reach train() because their patches reject
+    a_metrics = {"combined": 0.86, "recall_1": 0.90, "mean_cosine": 0.81,
+                 "productness_neg_acc": 0.85, "productness_pos_acc": 0.99}
+    _patch_train(StudentV2Target, monkeypatch, [{"status": "success", "metrics": a_metrics}])
+    _patch_log_row(StudentV2Target, monkeypatch)
+    monkeypatch.setattr(StudentV2Target, "METRICS_JSON", fake_repo / "metrics_final_v2.json")
+
+    rc = tournament.cmd_autoreason(
+        "student_v2",
+        max_passes=1, convergence=2, max_seconds_per_candidate=None,
+        hypothesis_seed="bad-patch", dry_run=False,
+        agent_client_factory=bad_factory(),
+    )
+    assert rc in (0, 1)  # may converge (A wins by default) or hit max_passes
+
+    outcomes = list(read_outcomes(history_in_tmp))
+    started = list(read_outcomes_started(history_in_tmp))
+
+    # All 3 candidates emitted outcomes
+    assert len(outcomes) == 3
+    statuses = {o.candidate_id: o.status for o in outcomes}
+    # 1 success (A), 2 failed (B, AB)
+    assert sum(1 for s in statuses.values() if s == "success") == 1
+    assert sum(1 for s in statuses.values() if s == "failed") == 2
+
+    # Only A has outcome_started — B and AB were rejected at apply --check
+    assert len(started) == 1
+    assert started[0].kind == "A"
+
+    # No unfinished
+    assert find_unfinished_candidates(history_in_tmp, run_id=started[0].run_id) == []
+
+    # Working tree clean
+    res = subprocess.run(["git", "status", "--porcelain"], cwd=fake_repo,
+                         capture_output=True, text=True, check=True)
+    assert not res.stdout.strip()

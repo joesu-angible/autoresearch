@@ -179,6 +179,60 @@ class ProductnessLCNet(LCNet):
         return self.productness_head(summary).squeeze(-1)
 
 
+def write_metrics_progress(
+    out_dir: Path,
+    *,
+    epoch: int,
+    max_epochs: int,
+    combined: float,
+    recall_at_1: float,
+    recall_at_5: float,
+    mean_cosine: float,
+    best_combined: float,
+    distill_loss: float,
+    productness_train_loss: float = 0.0,
+    productness_train_acc: float = 0.0,
+    productness_val_loss: float = 0.0,
+    productness_val_acc: float = 0.0,
+    productness_pos_acc: float = 0.0,
+    productness_neg_acc: float = 0.0,
+) -> None:
+    """Write metrics_progress_v2.json atomically after each eval cycle.
+
+    Same schema as metrics_final_v2.json plus is_partial=True and
+    epochs_completed. Atomic write (tmp + rename) avoids race conditions
+    when an external timeout signals while we're flushing.
+
+    Used by tournament adapters to recover partial state on `--max-seconds`
+    timeouts so a candidate that didn't finish still has interpretable
+    metrics for promote.decide() (which then rejects it as a timeout
+    regardless of values).
+    """
+    payload = {
+        "status": "in_progress",
+        "version": "v2",
+        "is_partial": True,
+        "epochs_completed": int(epoch + 1),  # 1-indexed for human readers
+        "max_epochs": int(max_epochs),
+        "combined_metric": float(combined),
+        "best_combined": float(best_combined),
+        "recall_at_1": float(recall_at_1),
+        "recall_at_5": float(recall_at_5),
+        "mean_cosine": float(mean_cosine),
+        "distill_loss": float(distill_loss),
+        "productness_train_loss": float(productness_train_loss),
+        "productness_train_acc": float(productness_train_acc),
+        "productness_val_loss": float(productness_val_loss),
+        "productness_val_acc": float(productness_val_acc),
+        "productness_pos_acc": float(productness_pos_acc),
+        "productness_neg_acc": float(productness_neg_acc),
+    }
+    progress_path = out_dir / "metrics_progress_v2.json"
+    tmp_path = progress_path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2))
+    tmp_path.replace(progress_path)  # atomic on POSIX
+
+
 def _adapter_sha8(adapter_dir: Path) -> str:
     """Stable 8-char identifier for a LoRA adapter, derived from its weights file.
 
@@ -817,6 +871,8 @@ def main(max_epochs: int, patience: int, swa_epochs: int, resume: bool) -> None:
             f"loss={stats.loss:.4f} distill={stats.distill_loss:.4f} "
             f"arc={stats.arc_loss:.4f} cosine={stats.mean_cosine:.4f}{arc_str} | {epoch_time:.1f}s"
         )
+        # Productness eval (defaults so progress write doesn't depend on flag)
+        productness_val: dict = {"loss": 0.0, "acc": 0.0, "pos_acc": 0.0, "neg_acc": 0.0, "n": 0}
         if USE_PRODUCTNESS_CLS:
             logger.info(
                 f"  Productness (train): loss={stats.productness_loss:.4f} "
@@ -824,7 +880,7 @@ def main(max_epochs: int, patience: int, swa_epochs: int, resume: bool) -> None:
                 f"pos_acc={stats.productness_pos_acc:.4f} neg_acc={stats.productness_neg_acc:.4f} "
                 f"(n={stats.productness_n})"
             )
-            val_metrics = eval_productness(
+            productness_val = eval_productness(
                 model=model,
                 val_paths=productness_val_paths,
                 negative_paths=collect_negative_paths(REID_NEGATIVES),
@@ -833,10 +889,10 @@ def main(max_epochs: int, patience: int, swa_epochs: int, resume: bool) -> None:
                 batch_size=BATCH_SIZE,
             )
             logger.info(
-                f"  Productness (val):   loss={val_metrics['loss']:.4f} "
-                f"acc={val_metrics['acc']:.4f} "
-                f"pos_acc={val_metrics['pos_acc']:.4f} neg_acc={val_metrics['neg_acc']:.4f} "
-                f"(n={val_metrics['n']})"
+                f"  Productness (val):   loss={productness_val['loss']:.4f} "
+                f"acc={productness_val['acc']:.4f} "
+                f"pos_acc={productness_val['pos_acc']:.4f} neg_acc={productness_val['neg_acc']:.4f} "
+                f"(n={productness_val['n']})"
             )
 
         # SWA
@@ -866,6 +922,25 @@ def main(max_epochs: int, patience: int, swa_epochs: int, resume: bool) -> None:
 
         combined = compute_combined_metric(recall_at_1, mean_cos)
         logger.info(f"  Combined: {combined:.6f} (best={best_combined:.6f})")
+
+        # Atomic partial-state dump for tournament timeout recovery (T1)
+        write_metrics_progress(
+            out_dir,
+            epoch=epoch,
+            max_epochs=max_epochs,
+            combined=combined,
+            recall_at_1=recall_at_1,
+            recall_at_5=recall_at_5,
+            mean_cosine=mean_cos,
+            best_combined=max(best_combined, combined),
+            distill_loss=stats.distill_loss,
+            productness_train_loss=stats.productness_loss,
+            productness_train_acc=stats.productness_acc,
+            productness_val_loss=productness_val["loss"],
+            productness_val_acc=productness_val["acc"],
+            productness_pos_acc=productness_val.get("pos_acc", 0.0),
+            productness_neg_acc=productness_val.get("neg_acc", 0.0),
+        )
 
         # Save last + best
         save_checkpoint(

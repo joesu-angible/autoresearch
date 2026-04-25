@@ -125,6 +125,45 @@ What each pass does (no manual steps):
 
 **Audit trail:** `research_loop/history.jsonl` records every LLM call's raw text plus parsed dataclass fields. A 5-pass run writes ≥ 50 records spanning candidate / outcome / decision / critique / patch_proposal / synthesis types. Replayable post-hoc.
 
+### 2a-bis. Resuming a crashed autoreason run (issue #14)
+
+If autoreason crashes (OOM during training, machine reboot, network blip
+killing the LLM CLI subprocess, Ctrl+C), restart the run **without losing
+prior progress**:
+
+```bash
+.venv/bin/python -m research_loop.tournament autoreason --resume <run_id>
+```
+
+The `<run_id>` is whatever appeared in `tournament status` or in
+`research_loop/runs/<run_id>/`. **Do not re-pass `--target`, `--llm-cli`,
+`--llm-model`, or any config flag** — they are loaded from the run's
+`summary.json`. Argparse rejects re-passing them with a clear error.
+
+**What gets re-run vs skipped:**
+- Candidates with `outcome_started` in history but no matching `outcome` →
+  re-run from scratch (the long training that crashed)
+- Candidates with both records → already done, skipped
+- Pending round (all outcomes done, decision missing) → promote runs
+- Subsequent passes continue normally
+
+**Pre-flight checks resume performs (any failure → exit 2):**
+- Run dir must exist at `research_loop/runs/<run_id>`
+- Prior runner's PID must be dead (`os.kill(pid, 0)` probe)
+- `summary.json` must have a `config` block (only present on T2+ runs)
+- Working tree must be cleanly recoverable: any modifications must be
+  fully explained by unfinished candidates' patches. Hand-edits or pulled
+  commits → refused with a list of unexplained paths
+
+**LLM cost on resume:** mid-training crashes are free to recover (no LLM
+re-call). Mid-LLM crashes (Critic / Author / Synthesizer subprocess died
+mid-call) cost one pass of LLM calls (~$0.10) since the entire pass
+restarts.
+
+**Multiple crashes in a row:** completely supported. Each resume writes
+new `outcome_started` records; `find_unfinished_candidates` de-duplicates
+by candidate_id. Same run_id, same audit trail throughout.
+
 ### 2b. Manual baseline run (when LLM access is unavailable)
 
 If you can't reach the Anthropic API, fall back to the original `run-round --baseline-only` flow:

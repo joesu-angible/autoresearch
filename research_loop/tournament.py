@@ -30,6 +30,8 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -302,6 +304,82 @@ _TRAINER_PATHS = {
 }
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+RUNS_DIR = Path(__file__).resolve().parent / "runs"
+
+
+def _new_run_id() -> str:
+    """Sortable run id for the run directory."""
+    import time
+    import uuid
+    return f"run{int(time.time())}-{uuid.uuid4().hex[:6]}"
+
+
+class _Tee:
+    """Mirror writes to two streams. Used to send autoreason's narrative print()
+    output to both stdout and run_dir/autoreason.log so external bots (Hermes,
+    Slack) can tail one canonical log path discovered via summary.json.
+    """
+
+    def __init__(self, primary, secondary):
+        self.primary = primary
+        self.secondary = secondary
+
+    def write(self, s):
+        self.primary.write(s)
+        self.primary.flush()
+        self.secondary.write(s)
+        self.secondary.flush()
+        return len(s)
+
+    def flush(self):
+        self.primary.flush()
+        self.secondary.flush()
+
+    def isatty(self):
+        return getattr(self.primary, "isatty", lambda: False)()
+
+    def fileno(self):  # subprocess sometimes asks
+        return self.primary.fileno()
+
+
+def _write_run_summary(
+    run_dir: Path,
+    *,
+    run_id: str,
+    target: str,
+    started_at: str,
+    pass_index: int,
+    max_passes: int,
+    consecutive_a_wins: int,
+    convergence: int,
+    last_decision: dict | None,
+    best_so_far: dict | None,
+    latest_critique_summary: str,
+    status: str,
+) -> None:
+    """Atomic JSON dump consumed by `tournament status` and external bots.
+
+    Atomic via temp + rename so a concurrent reader never sees a half-written file.
+    """
+    import json
+    payload = {
+        "run_id": run_id,
+        "target": target,
+        "started_at": started_at,
+        "current_pass": pass_index,
+        "max_passes": max_passes,
+        "consecutive_a_wins": consecutive_a_wins,
+        "convergence_threshold": convergence,
+        "last_decision": last_decision,
+        "best_so_far": best_so_far,
+        "latest_critique_summary": latest_critique_summary,
+        "status": status,
+    }
+    run_dir.mkdir(parents=True, exist_ok=True)
+    summary = run_dir / "summary.json"
+    tmp = summary.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=2))
+    tmp.replace(summary)
 
 
 def _read_trainer(target: str) -> tuple[str, str]:
@@ -333,7 +411,6 @@ def _read_recent_outcomes_jsonl(target: str, n: int = 10) -> str:
 
 def _git_status_clean(repo: Path) -> bool:
     """Return True iff `git status --porcelain` is empty in `repo`."""
-    import subprocess
     res = subprocess.run(
         ["git", "status", "--porcelain"],
         cwd=repo, capture_output=True, text=True, check=False,
@@ -422,8 +499,53 @@ def cmd_autoreason(
     author = AuthorBAgent(author_client)
     synthesizer = SynthesizerAgent(synthesizer_client)
 
+    # Run-level state for the status surface (Slice 1 of T9)
+    import datetime
+    run_id = _new_run_id()
+    run_dir = RUNS_DIR / run_id
+    started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    current_pointer = RUNS_DIR / f"{target}_CURRENT.txt"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    current_pointer.write_text(run_id)
+
+    # Mirror cmd_autoreason's narrative output to run_dir/autoreason.log so
+    # external tooling (Hermes, Slack bots, the `tournament status` command)
+    # can tail one canonical path discovered via summary.json. Operators who
+    # also nohup-redirect get duplicate output — that's fine.
+    # Write PID file for `tournament status` to detect alive vs exited
+    (run_dir / "autoreason.pid").write_text(str(os.getpid()))
+
+    narrative_log_path = run_dir / "autoreason.log"
+    _log_fh = open(narrative_log_path, "a", buffering=1)
+    _orig_stdout, _orig_stderr = sys.stdout, sys.stderr
+    sys.stdout = _Tee(_orig_stdout, _log_fh)
+    sys.stderr = _Tee(_orig_stderr, _log_fh)
+
+    def _close_narrative_log() -> None:
+        sys.stdout, sys.stderr = _orig_stdout, _orig_stderr
+        _log_fh.close()
+
+    def _status_dump(
+        pass_index: int, status: str, latest_critique: str = "",
+        last_decision_dict: dict | None = None, best: dict | None = None,
+    ) -> None:
+        _write_run_summary(
+            run_dir, run_id=run_id, target=target, started_at=started_at,
+            pass_index=pass_index, max_passes=max_passes,
+            consecutive_a_wins=consecutive_a_wins, convergence=convergence,
+            last_decision=last_decision_dict, best_so_far=best,
+            latest_critique_summary=latest_critique, status=status,
+        )
+
     consecutive_a_wins = 0
     last_round_id: str | None = None
+    latest_critique_text = ""
+    last_decision_dict: dict | None = None
+    best_so_far: dict | None = None
+
+    _status_dump(0, "starting")
+    print(f"  run_id: {run_id}")
+    print(f"  status: {run_dir}/summary.json")
 
     for pass_index in range(1, max_passes + 1):
         print(f"\n=== autoreason pass {pass_index}/{max_passes} ===")
@@ -535,12 +657,16 @@ def cmd_autoreason(
         rc = cmd_promote(round_id)
         if rc != 0:
             print(f"  promote failed for round {round_id}", file=sys.stderr)
+            _status_dump(pass_index, "promote_failed", latest_critique_text, last_decision_dict, best_so_far)
+            _close_narrative_log()
             return rc
 
         # 7. Convergence check
         decisions = [d for d in __import__("research_loop.candidate", fromlist=["read_decisions"]).read_decisions(HISTORY_PATH, round_id=round_id)]
         if not decisions:
             print(f"  no decision recorded for round {round_id}", file=sys.stderr)
+            _status_dump(pass_index, "no_decision", latest_critique_text, last_decision_dict, best_so_far)
+            _close_narrative_log()
             return 1
         decision = decisions[-1]
         if decision.winner_kind == "A":
@@ -548,14 +674,168 @@ def cmd_autoreason(
         else:
             consecutive_a_wins = 0
         last_round_id = round_id
+        latest_critique_text = critique.summary
+        last_decision_dict = {
+            "round_id": decision.round_id,
+            "winner_id": decision.winner_id,
+            "winner_kind": decision.winner_kind,
+            "promote": decision.promote,
+            "deployable": decision.deployable,
+            "reason": decision.reason,
+        }
+        # Best so far: pull from the freshest A or B/AB outcome we've seen
+        from research_loop.candidate import read_outcomes as _ro
+        all_outcomes = list(_ro(HISTORY_PATH))
+        best_so_far = None
+        for o in reversed(all_outcomes):
+            if o.target != target or o.status != "success" or not o.metrics:
+                continue
+            if best_so_far is None or o.metrics.get("combined", 0) > best_so_far.get("combined", 0):
+                best_so_far = dict(o.metrics)
+        _status_dump(pass_index, "running", latest_critique_text, last_decision_dict, best_so_far)
         print(f"  decision: winner={decision.winner_kind}, consecutive A={consecutive_a_wins}/{convergence}")
 
         if consecutive_a_wins >= convergence:
             print(f"\nConverged at pass {pass_index} (A won {convergence} consecutive rounds).")
+            _status_dump(pass_index, "converged", latest_critique_text, last_decision_dict, best_so_far)
+            _close_narrative_log()
             return 0
 
     print(f"\nMax passes ({max_passes}) reached without convergence. Last round: {last_round_id}")
+    _status_dump(max_passes, "max_passes_exhausted", latest_critique_text, last_decision_dict, best_so_far)
+    _close_narrative_log()
     return 1
+
+
+# ---------------------------------------------------------------------------
+# status — one-shot human/bot-readable summary of an autoreason run
+# ---------------------------------------------------------------------------
+
+def _format_status(summary: dict, *, run_dir: Path, log_path: Path,
+                   pid_alive: bool | None, etime: str | None,
+                   history_count: int) -> str:
+    """Render summary.json + ambient state into a single readable block.
+    Designed to be `cat`-ed by an external bot (Hermes, Slack) and pasted
+    verbatim back to a user asking "how is training going?".
+    """
+    lines: list[str] = []
+    target = summary.get("target", "?")
+    lines.append(f"autoreason status — {target}")
+    pid_str = "unknown"
+    if pid_alive is True:
+        pid_str = f"alive ({etime or '?'})"
+    elif pid_alive is False:
+        pid_str = "exited"
+    lines.append(f"  Run:          {summary.get('run_id', '?')} ({pid_str})")
+    lines.append(f"  Started:      {summary.get('started_at', '?')}")
+    lines.append(f"  Status:       {summary.get('status', '?')}")
+    pass_idx = summary.get("current_pass", 0)
+    max_p = summary.get("max_passes", "?")
+    a_wins = summary.get("consecutive_a_wins", 0)
+    conv = summary.get("convergence_threshold", "?")
+    lines.append(f"  Pass:         {pass_idx} / {max_p}  (consecutive A wins: {a_wins} / {conv})")
+    last_dec = summary.get("last_decision")
+    if last_dec:
+        lines.append(
+            f"  Last decision: {last_dec.get('winner_kind', '?')} wins "
+            f"({last_dec.get('round_id', '?')}, deployable={last_dec.get('deployable', '?')})"
+        )
+        lines.append(f"                 reason: {last_dec.get('reason', '')[:120]}")
+    best = summary.get("best_so_far")
+    if best:
+        lines.append(
+            f"  Best so far:  combined={best.get('combined', 0):.4f}  "
+            f"recall@1={best.get('recall_1', 0):.4f}  "
+            f"neg_acc={best.get('productness_neg_acc', 0):.4f}"
+        )
+    crit = summary.get("latest_critique_summary", "")
+    if crit:
+        lines.append(f"  Latest critique: {crit[:200]}")
+    lines.append("  Logs:")
+    lines.append(f"    narrative: {log_path}")
+    lines.append(f"    history:   {HISTORY_PATH} ({history_count} records)")
+    lines.append(f"    run dir:   {run_dir}")
+    return "\n".join(lines)
+
+
+def cmd_status(target: str | None = None, run_id: str | None = None) -> int:
+    """Print a one-shot status block — readable by humans and external bots.
+
+    Resolution order for which run to summarize:
+      1. explicit --run RUN_ID
+      2. --target TARGET → CURRENT pointer for that target
+      3. most recently mtime'd run dir under research_loop/runs/
+
+    Exit codes:
+      0  found a run, printed status
+      2  no run found
+    """
+    import json
+    if not RUNS_DIR.exists():
+        print(f"No runs directory at {RUNS_DIR}", file=sys.stderr)
+        return 2
+
+    # Resolve run_dir
+    chosen_run_dir: Path | None = None
+    if run_id:
+        candidate = RUNS_DIR / run_id
+        if candidate.is_dir():
+            chosen_run_dir = candidate
+    elif target:
+        pointer = RUNS_DIR / f"{target}_CURRENT.txt"
+        if pointer.exists():
+            chosen_run_dir = RUNS_DIR / pointer.read_text().strip()
+    else:
+        # Newest mtime wins
+        run_dirs = [d for d in RUNS_DIR.iterdir() if d.is_dir()]
+        if run_dirs:
+            chosen_run_dir = max(run_dirs, key=lambda d: d.stat().st_mtime)
+
+    if chosen_run_dir is None or not chosen_run_dir.is_dir():
+        print(f"No autoreason run found (target={target}, run_id={run_id})", file=sys.stderr)
+        return 2
+
+    summary_path = chosen_run_dir / "summary.json"
+    if not summary_path.exists():
+        print(f"Run dir {chosen_run_dir} has no summary.json yet", file=sys.stderr)
+        return 2
+
+    summary = json.loads(summary_path.read_text())
+
+    # Best-effort process check — if a PID was recorded, see if it's alive.
+    pid_alive: bool | None = None
+    etime: str | None = None
+    pid_path = chosen_run_dir / "autoreason.pid"
+    if pid_path.exists():
+        try:
+            pid = int(pid_path.read_text().strip())
+            import os
+            os.kill(pid, 0)
+            pid_alive = True
+            try:
+                ps = subprocess.run(
+                    ["ps", "-p", str(pid), "-o", "etime="],
+                    capture_output=True, text=True, check=False,
+                )
+                etime = ps.stdout.strip() or None
+            except Exception:
+                pass
+        except (ProcessLookupError, ValueError, PermissionError):
+            pid_alive = False
+
+    history_count = 0
+    if HISTORY_PATH.exists():
+        history_count = sum(1 for _ in HISTORY_PATH.open() if _.strip())
+
+    print(_format_status(
+        summary,
+        run_dir=chosen_run_dir,
+        log_path=chosen_run_dir / "autoreason.log",
+        pid_alive=pid_alive,
+        etime=etime,
+        history_count=history_count,
+    ))
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -592,6 +872,13 @@ def main(argv: list[str] | None = None) -> int:
     p_round.add_argument("--baseline-only", action="store_true",
                          help="run only the A (incumbent baseline); useful for first run")
     p_round.add_argument("--dry-run", action="store_true")
+
+    p_status = sub.add_parser("status",
+        help="one-shot 'how is autoreason going?' summary (for humans + Slack bots)")
+    p_status.add_argument("--target", choices=["student_v2", "dino_v2"], default=None,
+                          help="resolve via runs/<target>_CURRENT.txt")
+    p_status.add_argument("--run", default=None,
+                          help="explicit run_id (overrides --target)")
 
     p_auto = sub.add_parser("autoreason",
         help="fully-autonomous LLM-driven loop (Critic + Author B + Synthesizer)")
@@ -640,6 +927,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "run-round":
         return cmd_run_round(args.target, args.hypothesis, args.epochs,
                              baseline_only=args.baseline_only, dry_run=args.dry_run)
+    if args.cmd == "status":
+        return cmd_status(target=args.target, run_id=args.run)
     if args.cmd == "autoreason":
         return cmd_autoreason(
             args.target,

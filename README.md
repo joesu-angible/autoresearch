@@ -142,6 +142,43 @@ If A keeps winning but `combined` plateaus, inject one Opus critic pass to surfa
 
 Every LLM call's raw text is persisted to `research_loop/history.jsonl` as `record_type ∈ {critique, patch_proposal, synthesis, candidate, outcome, decision}`. A 5-pass run writes 50+ replayable records.
 
+### "How is training going?" — Slack-bot-friendly status
+
+Every autoreason run writes a single canonical summary file an external agent can read:
+
+```
+research_loop/runs/<run_id>/
+  ├── summary.json       ← structured run state, refreshed every pass
+  ├── autoreason.log     ← narrative output (Critic findings, decisions, errors)
+  └── autoreason.pid     ← process id (for liveness check)
+```
+
+A `<target>_CURRENT.txt` pointer in `research_loop/runs/` tracks the active run per target.
+
+One command bots can run to answer "what's happening?":
+
+```bash
+$ .venv/bin/python -m research_loop.tournament status --target student_v2
+
+autoreason status — student_v2
+  Run:          run1777891234-a3f8c9 (alive (4h 23m))
+  Started:      2026-04-26T12:34:56Z
+  Status:       running
+  Pass:         5 / 15  (consecutive A wins: 1 / 2)
+  Last decision: A wins (round r1777891234-abc, deployable=True)
+                 reason: candidate B beats A by Δcombined=+0.0034, recall@1=0.9012 vs A=0.8989
+  Best so far:  combined=0.8341  recall@1=0.9012  neg_acc=0.84
+  Latest critique: productness neg_acc plateau at 0.84; commodity ratio may be too high
+  Logs:
+    narrative: research_loop/runs/run1777891234-a3f8c9/autoreason.log
+    history:   research_loop/history.jsonl (60 records)
+    run dir:   research_loop/runs/run1777891234-a3f8c9
+```
+
+Resolution order: `--run RUN_ID` → `--target TARGET` (uses CURRENT pointer) → newest run dir.
+
+Wire `tournament status` into a Slack slash-command, ntfy webhook, or Hermes tool — same shell command, paste output verbatim.
+
 See [HANDOFF.md](HANDOFF.md) for the full operator runbook (modes 2a / 2b / 2c, cache invariants, smoke procedure, troubleshooting).
 
 ## Adding New Research Topics

@@ -329,6 +329,195 @@ def test_autoreason_dry_run_skips_dirty_check(history_in_tmp, fake_repo, monkeyp
     assert len(list(read_critiques(history_in_tmp))) == 1
 
 
+def test_autoreason_writes_summary_json_each_pass(history_in_tmp, fake_repo, monkeypatch, tmp_path):
+    """summary.json is written atomically at startup + after each pass + on exit.
+    External agents (Hermes, Slack bots) read this single file to answer
+    'how is training going?' without parsing logs.
+    """
+    metrics = {"combined": 0.86, "recall_1": 0.90, "mean_cosine": 0.81,
+               "productness_neg_acc": 0.85, "productness_pos_acc": 0.99}
+    fake_outcomes = [{"status": "success", "metrics": metrics}] * 6  # 2 passes × 3
+
+    from research_loop.targets.student_v2 import StudentV2Target
+    monkeypatch.setattr(StudentV2Target, "train", _patch_adapter_train(fake_outcomes))
+    monkeypatch.setattr(StudentV2Target, "log_row", _stub_log_row)
+    monkeypatch.setattr(StudentV2Target, "METRICS_JSON", fake_repo / "metrics_final_v2.json")
+
+    runs_dir = tmp_path / "runs"
+    monkeypatch.setattr(tournament, "RUNS_DIR", runs_dir)
+
+    rc = tournament.cmd_autoreason(
+        "student_v2",
+        max_passes=2, convergence=2,
+        max_seconds_per_candidate=None,
+        hypothesis_seed="test", dry_run=False,
+        agent_client_factory=_mock_agent_client_factory(),
+    )
+    assert rc == 0  # converged at k=2
+
+    # Exactly one run dir was created; summary.json present
+    run_dirs = [d for d in runs_dir.iterdir() if d.is_dir()]
+    assert len(run_dirs) == 1
+    summary_path = run_dirs[0] / "summary.json"
+    assert summary_path.exists()
+
+    # Final summary state should reflect convergence
+    import json
+    summary = json.loads(summary_path.read_text())
+    assert summary["status"] == "converged"
+    assert summary["target"] == "student_v2"
+    assert summary["current_pass"] == 2
+    assert summary["consecutive_a_wins"] >= 2
+    assert summary["last_decision"]["winner_kind"] == "A"
+    assert summary["best_so_far"]["combined"] == 0.86
+
+    # CURRENT pointer file exists
+    pointer = runs_dir / "student_v2_CURRENT.txt"
+    assert pointer.exists()
+    assert pointer.read_text() == run_dirs[0].name
+
+
+def test_autoreason_writes_narrative_log_to_run_dir(history_in_tmp, fake_repo, monkeypatch, tmp_path):
+    """run_dir/autoreason.log captures the narrative print() output. External
+    tooling (Hermes, Slack bots) can tail this single file from the path
+    summary.json points at."""
+    metrics = {"combined": 0.86, "recall_1": 0.90, "mean_cosine": 0.81,
+               "productness_neg_acc": 0.85, "productness_pos_acc": 0.99}
+    fake_outcomes = [{"status": "success", "metrics": metrics}] * 3
+
+    from research_loop.targets.student_v2 import StudentV2Target
+    monkeypatch.setattr(StudentV2Target, "train", _patch_adapter_train(fake_outcomes))
+    monkeypatch.setattr(StudentV2Target, "log_row", _stub_log_row)
+    monkeypatch.setattr(StudentV2Target, "METRICS_JSON", fake_repo / "metrics_final_v2.json")
+    monkeypatch.setattr(tournament, "RUNS_DIR", tmp_path / "runs")
+
+    tournament.cmd_autoreason(
+        "student_v2",
+        max_passes=1, convergence=2,
+        max_seconds_per_candidate=None,
+        hypothesis_seed="test", dry_run=False,
+        agent_client_factory=_mock_agent_client_factory(),
+    )
+
+    run_dirs = [d for d in (tmp_path / "runs").iterdir() if d.is_dir()]
+    log_path = run_dirs[0] / "autoreason.log"
+    assert log_path.exists()
+    content = log_path.read_text()
+    # Narrative milestones should be captured
+    assert "autoreason pass 1/1" in content
+    assert "critic:" in content
+    assert "running A" in content
+
+
+def test_autoreason_summary_status_max_passes_exhausted(history_in_tmp, fake_repo, monkeypatch, tmp_path):
+    """When max_passes hits without convergence, summary.json shows that status."""
+    a_metrics = {"combined": 0.80, "recall_1": 0.85, "mean_cosine": 0.75,
+                 "productness_neg_acc": 0.80, "productness_pos_acc": 0.99}
+    b_metrics = {"combined": 0.86, "recall_1": 0.90, "mean_cosine": 0.81,
+                 "productness_neg_acc": 0.85, "productness_pos_acc": 0.99}
+    fake_outcomes = []
+    for _ in range(3):
+        fake_outcomes.extend([
+            {"status": "success", "metrics": a_metrics},
+            {"status": "success", "metrics": b_metrics},
+            {"status": "success", "metrics": b_metrics},
+        ])
+
+    from research_loop.targets.student_v2 import StudentV2Target
+    monkeypatch.setattr(StudentV2Target, "train", _patch_adapter_train(fake_outcomes))
+    monkeypatch.setattr(StudentV2Target, "log_row", _stub_log_row)
+    monkeypatch.setattr(StudentV2Target, "METRICS_JSON", fake_repo / "metrics_final_v2.json")
+    monkeypatch.setattr(tournament, "RUNS_DIR", tmp_path / "runs")
+
+    rc = tournament.cmd_autoreason(
+        "student_v2",
+        max_passes=3, convergence=2,
+        max_seconds_per_candidate=None,
+        hypothesis_seed="test", dry_run=False,
+        agent_client_factory=_mock_agent_client_factory(),
+    )
+    assert rc != 0
+
+    runs = list((tmp_path / "runs").iterdir())
+    summary_path = next(d for d in runs if d.is_dir()) / "summary.json"
+    import json
+    summary = json.loads(summary_path.read_text())
+    assert summary["status"] == "max_passes_exhausted"
+
+
+def test_status_subcommand_renders_summary(history_in_tmp, fake_repo, monkeypatch, tmp_path, capsys):
+    """`tournament status` reads the latest run's summary.json and prints
+    a human/bot-readable block with all the headline fields."""
+    metrics = {"combined": 0.86, "recall_1": 0.90, "mean_cosine": 0.81,
+               "productness_neg_acc": 0.85, "productness_pos_acc": 0.99}
+    fake_outcomes = [{"status": "success", "metrics": metrics}] * 6
+
+    from research_loop.targets.student_v2 import StudentV2Target
+    monkeypatch.setattr(StudentV2Target, "train", _patch_adapter_train(fake_outcomes))
+    monkeypatch.setattr(StudentV2Target, "log_row", _stub_log_row)
+    monkeypatch.setattr(StudentV2Target, "METRICS_JSON", fake_repo / "metrics_final_v2.json")
+    monkeypatch.setattr(tournament, "RUNS_DIR", tmp_path / "runs")
+
+    tournament.cmd_autoreason(
+        "student_v2",
+        max_passes=2, convergence=2,
+        max_seconds_per_candidate=None,
+        hypothesis_seed="test", dry_run=False,
+        agent_client_factory=_mock_agent_client_factory(),
+    )
+    capsys.readouterr()  # flush autoreason's own output
+
+    rc = tournament.cmd_status(target="student_v2")
+    assert rc == 0
+    out = capsys.readouterr().out
+
+    # Headline fields all present
+    assert "autoreason status — student_v2" in out
+    assert "converged" in out
+    assert "Pass:" in out
+    assert "consecutive A wins:" in out
+    assert "Best so far:" in out
+    assert "combined=0.8600" in out
+    assert "Logs:" in out
+
+
+def test_status_subcommand_with_no_runs_returns_2(monkeypatch, tmp_path, capsys):
+    """`tournament status` without any runs surfaces a clear error + non-zero exit."""
+    monkeypatch.setattr(tournament, "RUNS_DIR", tmp_path / "runs")
+    rc = tournament.cmd_status(target="student_v2")
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "No" in err  # "No runs directory" or "No autoreason run found"
+
+
+def test_status_subcommand_resolves_explicit_run_id(history_in_tmp, fake_repo, monkeypatch, tmp_path, capsys):
+    """`tournament status --run RUN_ID` skips the CURRENT.txt pointer."""
+    metrics = {"combined": 0.86, "recall_1": 0.90, "mean_cosine": 0.81,
+               "productness_neg_acc": 0.85, "productness_pos_acc": 0.99}
+    fake_outcomes = [{"status": "success", "metrics": metrics}] * 6
+
+    from research_loop.targets.student_v2 import StudentV2Target
+    monkeypatch.setattr(StudentV2Target, "train", _patch_adapter_train(fake_outcomes))
+    monkeypatch.setattr(StudentV2Target, "log_row", _stub_log_row)
+    monkeypatch.setattr(StudentV2Target, "METRICS_JSON", fake_repo / "metrics_final_v2.json")
+    monkeypatch.setattr(tournament, "RUNS_DIR", tmp_path / "runs")
+
+    tournament.cmd_autoreason(
+        "student_v2", max_passes=2, convergence=2,
+        max_seconds_per_candidate=None,
+        hypothesis_seed="test", dry_run=False,
+        agent_client_factory=_mock_agent_client_factory(),
+    )
+    capsys.readouterr()
+
+    runs = [d for d in (tmp_path / "runs").iterdir() if d.is_dir()]
+    rid = runs[0].name
+    rc = tournament.cmd_status(run_id=rid)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert rid in out
+
+
 def test_autoreason_per_role_factory_called_with_each_role(history_in_tmp, fake_repo, monkeypatch):
     """Per-role overrides: each role's factory call gets its own role string,
     so callers can route Critic / Author / Synthesizer to different CLIs/models.

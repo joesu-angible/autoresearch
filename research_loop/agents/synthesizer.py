@@ -87,13 +87,14 @@ def _parse_synthesis(raw: str) -> PatchProposal:
     fence_match = _FENCE_RE.search(raw)
     if fence_match:
         diff_body = fence_match.group("body").strip()
-        diff = "" if diff_body.upper() == "NO_PATCH" else diff_body
+        diff = "" if diff_body.upper() == "NO_PATCH" else (diff_body + "\n")
     else:
         if "NO_PATCH" in raw.split("# Diff", 1)[-1]:
             diff = ""
         else:
             after = raw.split("# Diff", 1)[-1].strip()
-            diff = after.strip("`").strip()
+            stripped = after.strip("`").strip()
+            diff = (stripped + "\n") if stripped else ""
 
     return PatchProposal(rationale=rationale, diff=diff, raw=raw)
 

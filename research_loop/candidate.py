@@ -23,7 +23,7 @@ from typing import Iterator, Literal
 
 CandidateKind = Literal["A", "B", "AB"]
 TargetName = Literal["student_v2", "dino_v2"]
-RecordType = Literal["candidate", "outcome", "decision"]
+RecordType = Literal["candidate", "outcome", "decision", "critique", "patch_proposal", "synthesis"]
 
 REQUIRED_FIELDS: tuple[str, ...] = (
     "id",
@@ -135,11 +135,79 @@ class Decision:
         return cls(**data)
 
 
+@dataclass
+class CritiqueRecord:
+    """Audit record of one Critic LLM call."""
+
+    round_id: str
+    target: TargetName
+    pass_index: int
+    summary: str
+    problems: list[str]
+    raw: str  # full LLM response text
+    record_type: RecordType = "critique"
+    created_at: float = field(default_factory=time.time)
+
+    def to_jsonl(self) -> str:
+        return json.dumps(asdict(self), sort_keys=True)
+
+    @classmethod
+    def from_jsonl(cls, line: str) -> "CritiqueRecord":
+        return cls(**json.loads(line))
+
+
+@dataclass
+class PatchProposalRecord:
+    """Audit record of one Author B LLM call."""
+
+    round_id: str
+    target: TargetName
+    pass_index: int
+    candidate_id: str  # the B candidate this patch is attached to
+    rationale: str
+    diff: str
+    raw: str
+    record_type: RecordType = "patch_proposal"
+    created_at: float = field(default_factory=time.time)
+
+    def to_jsonl(self) -> str:
+        return json.dumps(asdict(self), sort_keys=True)
+
+    @classmethod
+    def from_jsonl(cls, line: str) -> "PatchProposalRecord":
+        return cls(**json.loads(line))
+
+
+@dataclass
+class SynthesisRecord:
+    """Audit record of one Synthesizer LLM call."""
+
+    round_id: str
+    target: TargetName
+    pass_index: int
+    candidate_id: str  # the AB candidate this synthesis is attached to
+    rationale: str
+    diff: str
+    raw: str
+    record_type: RecordType = "synthesis"
+    created_at: float = field(default_factory=time.time)
+
+    def to_jsonl(self) -> str:
+        return json.dumps(asdict(self), sort_keys=True)
+
+    @classmethod
+    def from_jsonl(cls, line: str) -> "SynthesisRecord":
+        return cls(**json.loads(line))
+
+
 # ---------------------------------------------------------------------------
 # I/O helpers
 # ---------------------------------------------------------------------------
 
-def append_history(history_path: Path, record: "Candidate | Outcome | Decision") -> None:
+HistoryRecord = "Candidate | Outcome | Decision | CritiqueRecord | PatchProposalRecord | SynthesisRecord"
+
+
+def append_history(history_path: Path, record: HistoryRecord) -> None:
     history_path.parent.mkdir(parents=True, exist_ok=True)
     with history_path.open("a") as f:
         f.write(record.to_jsonl() + "\n")
@@ -182,6 +250,33 @@ def read_decisions(history_path: Path, round_id: str | None = None) -> Iterator[
             continue
         raw["deploy_failures"] = tuple(raw.get("deploy_failures", ()))
         yield Decision(**raw)
+
+
+def read_critiques(history_path: Path, round_id: str | None = None) -> Iterator[CritiqueRecord]:
+    for raw in _iter_records(history_path):
+        if raw.get("record_type") != "critique":
+            continue
+        if round_id is not None and raw.get("round_id") != round_id:
+            continue
+        yield CritiqueRecord(**raw)
+
+
+def read_patch_proposals(history_path: Path, round_id: str | None = None) -> Iterator[PatchProposalRecord]:
+    for raw in _iter_records(history_path):
+        if raw.get("record_type") != "patch_proposal":
+            continue
+        if round_id is not None and raw.get("round_id") != round_id:
+            continue
+        yield PatchProposalRecord(**raw)
+
+
+def read_syntheses(history_path: Path, round_id: str | None = None) -> Iterator[SynthesisRecord]:
+    for raw in _iter_records(history_path):
+        if raw.get("record_type") != "synthesis":
+            continue
+        if round_id is not None and raw.get("round_id") != round_id:
+            continue
+        yield SynthesisRecord(**raw)
 
 
 def find_candidate(history_path: Path, candidate_id: str) -> Candidate | None:

@@ -92,7 +92,7 @@ def _parse_patch_proposal(raw: str) -> PatchProposal:
     fence_match = _FENCE_RE.search(raw)
     if fence_match:
         diff_body = fence_match.group("body").strip()
-        diff = "" if diff_body.upper() == "NO_PATCH" else diff_body
+        diff = "" if diff_body.upper() == "NO_PATCH" else (diff_body + "\n")
     else:
         # Look for unfenced "NO_PATCH" sentinel after # Diff heading
         if "NO_PATCH" in raw.split("# Diff", 1)[-1]:
@@ -100,7 +100,8 @@ def _parse_patch_proposal(raw: str) -> PatchProposal:
         else:
             # No fence and no NO_PATCH — best-effort: take everything after `# Diff`
             after = raw.split("# Diff", 1)[-1].strip()
-            diff = after.strip("`").strip()
+            stripped = after.strip("`").strip()
+            diff = (stripped + "\n") if stripped else ""
 
     return PatchProposal(rationale=rationale, diff=diff, raw=raw)
 

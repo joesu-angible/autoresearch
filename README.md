@@ -181,6 +181,8 @@ Wire `tournament status` into a Slack slash-command, ntfy webhook, or Hermes too
 
 See [HANDOFF.md](HANDOFF.md) for the full operator runbook (modes 2a / 2b / 2c, cache invariants, smoke procedure, troubleshooting).
 
+For a worked example showing exactly what each pass does — Critic findings, Author B's diff, Synthesizer's blend, metric tables, convergence trajectory — see [AUTOREASON-WALKTHROUGH.md](AUTOREASON-WALKTHROUGH.md).
+
 ## Adding New Research Topics
 
 Create a new subfolder following the existing pattern:

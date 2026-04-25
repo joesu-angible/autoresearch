@@ -882,6 +882,32 @@ def main():
             current_recall = metrics["recall@1"]
             current_cosine = metrics["mean_cosine"]
 
+            # Atomic partial-state dump for tournament timeout recovery (T1).
+            # Mirrors the student-side schema; no productness val split on
+            # DINO yet, so train-side stats are reported under both keys.
+            import json as _json
+            progress_payload = {
+                "status": "in_progress",
+                "version": "v2",
+                "is_partial": True,
+                "epochs_completed": int(epoch),
+                "max_epochs": int(EPOCHS),
+                "combined_metric": float(metrics["combined"]),
+                "best_combined": float(max(best_combined, metrics["combined"])),
+                "recall_at_1": float(current_recall),
+                "recall_at_5": float(metrics.get("recall@5", 0.0)),
+                "mean_cosine": float(current_cosine),
+                "productness_loss": float(stats.get("productness_loss", 0.0)),
+                "productness_acc": float(stats.get("productness_acc", 0.0)),
+                "productness_pos_acc": float(stats.get("productness_pos_acc", 0.0)),
+                "productness_neg_acc": float(stats.get("productness_neg_acc", 0.0)),
+            }
+            progress_path = Path(ADAPTER_OUTPUT_DIR).parent / "metrics_progress_v2.json"
+            progress_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = progress_path.with_suffix(".json.tmp")
+            tmp.write_text(_json.dumps(progress_payload, indent=2))
+            tmp.replace(progress_path)
+
             is_collapsed = current_cosine > EARLY_STOP_COSINE_THRESHOLD
             if is_collapsed:
                 collapse_counter += 1

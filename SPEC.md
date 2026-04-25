@@ -178,6 +178,15 @@ class ProductnessWrapper(Dataset):
 - Use `--no-verify` to bypass tests.
 - Have the tournament outer loop auto-patch `prepare.py` or any V1 file.
 
+## Two-sided productness (project decision 2026-04-25)
+
+Productness is added on **both** the teacher (DINOv3 + LoRA) and the student (LCNet). Project rationale: shaping the teacher's 1280-d embedding space to be product-aware before distillation gives the student a head-start on the same signal — productness is mandatory across the stack, not just at the deployment layer.
+
+- `dino_finetune/train_dino_v2.py` — `DinoProductnessHead` on the CLS embedding; target derived from the existing `NEGATIVE_LABEL` sentinel (cleaner than path-string match).
+- `student_finetune/train_v2.py` — `ProductnessLCNet` head on the shared summary feature; target derived from `REID_NEGATIVES` membership.
+- Identical loss math both sides (`productness_loss_block` in DINO mirrors the inline block in `train.py`): asymmetric label smoothing (`eps_pos=0.05`, `eps_neg=0.02`) + focal weighting (`γ=2.0`).
+- Teacher saves `productness_head.pt` alongside the LoRA adapter. Not consumed at student-distillation time (student reads cached embeddings only); its purpose is to shape the embedding space at *teacher* training time.
+
 ## Metric model (project decision 2026-04-25)
 
 `combined_metric` stays **retrieval-only**: `0.5 * recall@1 + 0.5 * mean_cosine`. Comparable to V1 history, no re-labeling.

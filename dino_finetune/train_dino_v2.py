@@ -94,6 +94,19 @@ USE_STRONG_AUG = True
 USE_BASE_ANCHOR = False
 BASE_ANCHOR_WEIGHT = 0.1
 
+# -- Productness CLS branch (issue #5) --
+# Mirrors student-side wiring (student_finetune/train_v2.py) but on the DINOv3
+# 1280-d CLS embedding. Per project decision 2026-04-25, the teacher must also
+# learn productness so its embedding space is product-aware before distillation.
+# Target derivation is cleaner here than student: label == NEGATIVE_LABEL → 0.0,
+# anything else (real class id or COMMODITY_LABEL) → 1.0. No path-string match.
+USE_PRODUCTNESS_CLS = True
+PRODUCTNESS_CLS_WEIGHT = 0.02
+PRODUCTNESS_HEAD_HIDDEN = 256
+PRODUCTNESS_LABEL_SMOOTHING_POS = 0.05
+PRODUCTNESS_LABEL_SMOOTHING_NEG = 0.02
+PRODUCTNESS_FOCAL_GAMMA = 2.0
+
 # -- Training --
 SEED = 42
 USE_GRADIENT_CHECKPOINTING = True
@@ -416,13 +429,78 @@ def base_anchor_loss(lora_emb: torch.Tensor, base_emb: torch.Tensor) -> torch.Te
 
 
 # ============================================================
+# Productness CLS branch (mirrors student-side wiring)
+# ============================================================
+
+class DinoProductnessHead(torch.nn.Module):
+    """Auxiliary product-vs-personal-item head on the DINOv3 1280-d CLS embedding.
+
+    Saved alongside the LoRA adapter; not consumed at student-distillation time
+    (student only reads cached embeddings). Its purpose is to *shape* the
+    teacher's embedding space so personal items separate from products before
+    distillation.
+    """
+
+    def __init__(self, embedding_dim: int = 1280, hidden: int = PRODUCTNESS_HEAD_HIDDEN):
+        super().__init__()
+        self.net = torch.nn.Sequential(
+            torch.nn.Linear(embedding_dim, hidden),
+            torch.nn.BatchNorm1d(hidden),
+            torch.nn.Hardswish(),
+            torch.nn.Dropout(p=0.1),
+            torch.nn.Linear(hidden, 1),
+        )
+
+    def forward(self, embeddings: torch.Tensor) -> torch.Tensor:
+        """[B, 1280] → [B] logits."""
+        return self.net(embeddings).squeeze(-1)
+
+
+def productness_loss_block(
+    logits: torch.Tensor,
+    y_hard: torch.Tensor,
+    eps_pos: float = PRODUCTNESS_LABEL_SMOOTHING_POS,
+    eps_neg: float = PRODUCTNESS_LABEL_SMOOTHING_NEG,
+    gamma: float = PRODUCTNESS_FOCAL_GAMMA,
+) -> torch.Tensor:
+    """Asymmetric label smoothing + focal-weighted BCE.
+
+    Identical math to the student-side block in train.py::run_train_epoch — the
+    same loss-engineering knobs apply (per ML-engineer review 2026-04-25).
+    """
+    if eps_pos > 0.0 or eps_neg > 0.0:
+        y_target = y_hard * (1.0 - eps_pos) + (1.0 - y_hard) * eps_neg
+    else:
+        y_target = y_hard
+    per_sample = F.binary_cross_entropy_with_logits(logits, y_target, reduction="none")
+    if gamma > 0.0:
+        with torch.no_grad():
+            p = torch.sigmoid(logits)
+            p_t = y_hard * p + (1.0 - y_hard) * (1.0 - p)
+            focal_w = (1.0 - p_t).pow(gamma)
+        return (per_sample * focal_w).mean()
+    return per_sample.mean()
+
+
+def derive_productness_targets(labels: torch.Tensor) -> torch.Tensor:
+    """Derive 0/1 productness targets from DINO V2 dataset labels.
+
+    Cleaner than the student's path-string check — DINO already encodes
+    "is this a personal item?" via the NEGATIVE_LABEL sentinel.
+    """
+    return (labels != NEGATIVE_LABEL).float()
+
+
+# ============================================================
 # Optimizer / scheduler (inherit v1 pattern)
 # ============================================================
 
-def build_optimizer(model, arcface_head=None) -> torch.optim.Optimizer:
+def build_optimizer(model, arcface_head=None, productness_head=None) -> torch.optim.Optimizer:
     params = [p for p in model.parameters() if p.requires_grad]
     if arcface_head is not None:
         params += list(arcface_head.parameters())
+    if productness_head is not None:
+        params += list(productness_head.parameters())
     return torch.optim.AdamW(params, lr=LR, weight_decay=WEIGHT_DECAY)
 
 
@@ -485,6 +563,7 @@ def train_one_epoch(
     processor,
     arcface_head: "ArcFaceHead | None" = None,
     base_model=None,
+    productness_head: "DinoProductnessHead | None" = None,
 ) -> dict:
     """Two-view forward for SSL + main InfoNCE + optional ArcFace + optional base anchor."""
     model.train()
@@ -497,6 +576,10 @@ def train_one_epoch(
     total_arc = 0.0
     total_ssl = 0.0
     total_anchor = 0.0
+    total_productness = 0.0
+    productness_correct = 0
+    productness_pos_correct = productness_pos_total = 0
+    productness_neg_correct = productness_neg_total = 0
     num_batches = 0
 
     effective_steps = len(train_loader)
@@ -564,6 +647,32 @@ def train_one_epoch(
                 loss = loss + BASE_ANCHOR_WEIGHT * loss_anchor
                 loss_anchor_val = loss_anchor.item()
 
+            # --- Productness CLS (issue #5) on view A's CLS embedding ---
+            loss_productness_val = 0.0
+            if productness_head is not None and PRODUCTNESS_CLS_WEIGHT > 0:
+                y_hard = derive_productness_targets(labels).to(emb_a.dtype)
+                productness_logits = productness_head(emb_a.float()).to(emb_a.dtype)
+                loss_productness = productness_loss_block(
+                    productness_logits.float(),
+                    y_hard.float(),
+                    eps_pos=PRODUCTNESS_LABEL_SMOOTHING_POS,
+                    eps_neg=PRODUCTNESS_LABEL_SMOOTHING_NEG,
+                    gamma=PRODUCTNESS_FOCAL_GAMMA,
+                )
+                loss = loss + PRODUCTNESS_CLS_WEIGHT * loss_productness
+                loss_productness_val = float(loss_productness.item())
+                with torch.no_grad():
+                    pred = (productness_logits > 0).float()
+                    pos_mask = y_hard > 0.5
+                    neg_mask = ~pos_mask
+                    productness_correct += int((pred == y_hard).sum().item())
+                    productness_pos_total += int(pos_mask.sum().item())
+                    productness_neg_total += int(neg_mask.sum().item())
+                    if pos_mask.any():
+                        productness_pos_correct += int((pred[pos_mask] == 1.0).sum().item())
+                    if neg_mask.any():
+                        productness_neg_correct += int((pred[neg_mask] == 0.0).sum().item())
+
             loss = loss / GRADIENT_ACCUMULATION_STEPS
 
         loss.backward()
@@ -578,6 +687,7 @@ def train_one_epoch(
         total_arc += loss_arc_val
         total_ssl += loss_ssl_val
         total_anchor += loss_anchor_val
+        total_productness += loss_productness_val
         num_batches += 1
 
         if (step + 1) % 50 == 0:
@@ -601,6 +711,7 @@ def train_one_epoch(
         peak_vram_mb = torch.cuda.max_memory_allocated() / (1024 ** 2)
         logger.info(f"Peak VRAM after epoch 1: {peak_vram_mb:.0f} MB")
 
+    _prod_n = productness_pos_total + productness_neg_total
     return {
         "loss": total_loss / max(num_batches, 1),
         "nce": total_nce / max(num_batches, 1),
@@ -608,6 +719,11 @@ def train_one_epoch(
         "ssl": total_ssl / max(num_batches, 1),
         "anchor": total_anchor / max(num_batches, 1),
         "arc_weight": arc_w,
+        "productness_loss": total_productness / max(num_batches, 1) if productness_head is not None else 0.0,
+        "productness_acc": (productness_correct / _prod_n) if _prod_n > 0 else 0.0,
+        "productness_pos_acc": (productness_pos_correct / productness_pos_total) if productness_pos_total > 0 else 0.0,
+        "productness_neg_acc": (productness_neg_correct / productness_neg_total) if productness_neg_total > 0 else 0.0,
+        "productness_n": _prod_n,
     }
 
 
@@ -682,7 +798,21 @@ def main():
         ).to(DEVICE)
         logger.info(f"ArcFace head: {num_product_classes} classes, s={ARCFACE_SCALE}, m={ARCFACE_MARGIN}")
 
-    optimizer = build_optimizer(model, arcface_head=arcface_head)
+    # -- Productness CLS head (issue #5; teacher-side mirror of student) --
+    productness_head = None
+    if USE_PRODUCTNESS_CLS:
+        productness_head = DinoProductnessHead(
+            embedding_dim=EMBEDDING_DIM,
+            hidden=PRODUCTNESS_HEAD_HIDDEN,
+        ).to(DEVICE)
+        logger.info(
+            f"Productness CLS head: weight={PRODUCTNESS_CLS_WEIGHT}, "
+            f"hidden={PRODUCTNESS_HEAD_HIDDEN}, "
+            f"smoothing=({PRODUCTNESS_LABEL_SMOOTHING_POS},{PRODUCTNESS_LABEL_SMOOTHING_NEG}), "
+            f"focal_gamma={PRODUCTNESS_FOCAL_GAMMA}"
+        )
+
+    optimizer = build_optimizer(model, arcface_head=arcface_head, productness_head=productness_head)
     steps_per_epoch = (
         min(len(train_loader), MAX_STEPS_PER_EPOCH) if MAX_STEPS_PER_EPOCH > 0
         else len(train_loader)
@@ -726,6 +856,7 @@ def main():
             processor=processor,
             arcface_head=arcface_head,
             base_model=anchor_base,
+            productness_head=productness_head,
         )
         epoch_time = time.time() - epoch_start
         logger.info(
@@ -734,6 +865,14 @@ def main():
             f"ssl={stats['ssl']:.4f} anchor={stats['anchor']:.4f} "
             f"time={epoch_time:.1f}s"
         )
+        if productness_head is not None:
+            logger.info(
+                f"  Productness: loss={stats['productness_loss']:.4f} "
+                f"acc={stats['productness_acc']:.4f} "
+                f"pos_acc={stats['productness_pos_acc']:.4f} "
+                f"neg_acc={stats['productness_neg_acc']:.4f} "
+                f"(n={stats['productness_n']})"
+            )
 
         # -- Eval + early stop --
         if epoch % EVAL_EVERY_N_EPOCHS == 0:
@@ -757,6 +896,11 @@ def main():
                 if improved:
                     best_combined = metrics["combined"]
                     save_adapter(model, output_dir=ADAPTER_OUTPUT_DIR)
+                    if productness_head is not None:
+                        torch.save(
+                            productness_head.state_dict(),
+                            Path(ADAPTER_OUTPUT_DIR) / "productness_head.pt",
+                        )
                     logger.info(f"New best combined={best_combined:.4f}, adapter saved")
                     patience_counter = 0
                 else:

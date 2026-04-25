@@ -28,3 +28,8 @@ torch = [
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
+
+[tool.pytest.ini_options]
+# importlib mode avoids namespace collisions between sibling tests/ folders
+# (student_finetune/tests, research_loop/tests, dino_finetune/tests).
+addopts = "--import-mode=importlib"

@@ -185,6 +185,36 @@ def test_dry_run_pipeline_writes_outcome_no_decision(tmp_history, monkeypatch):
     assert decisions == []
 
 
+def test_run_round_variants_dry_run_writes_a_plus_n_outcomes(tmp_history, tmp_path):
+    """run-round --variants in dry-run mode runs A + N candidates end-to-end."""
+    vfile = _write_variants_file(tmp_path / "v.jsonl", n=3)
+    rc = tournament.cmd_run_round(
+        "student_v2", "sweep dry-run",
+        epochs=None, baseline_only=False, dry_run=True, variants=vfile,
+    )
+    assert rc == 0
+    outcomes = list(read_outcomes(tmp_history))
+    assert len(outcomes) == 4  # 1 A + 3 variants
+    assert all(o.status == "noop" for o in outcomes)
+    # All outcomes share one round_id
+    assert len({o.round_id for o in outcomes}) == 1
+    # Candidates: 1 A + 3 B; no AB synthesis
+    candidates = list(read_history(tmp_history))
+    kinds = sorted(c.kind for c in candidates)
+    assert kinds == ["A", "B", "B", "B"]
+
+
+def test_run_round_variants_baseline_only_argparse_error(tmp_history, tmp_path, capsys):
+    vfile = _write_variants_file(tmp_path / "v.jsonl", n=1)
+    with pytest.raises(SystemExit):
+        tournament.main([
+            "run-round", "--target", "student_v2",
+            "--baseline-only", "--variants", str(vfile), "--dry-run",
+        ])
+    err = capsys.readouterr().err
+    assert "not allowed with" in err or "mutually exclusive" in err
+
+
 def test_promote_with_synthetic_outcomes_writes_decision(tmp_history):
     """Hand-craft a round with a clear winner; verify decide() + Decision write."""
     rid = "r-test"

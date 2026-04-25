@@ -306,9 +306,11 @@ def cmd_promote(round_id: str) -> int:
 # ---------------------------------------------------------------------------
 
 def cmd_run_round(target: str, hypothesis: str, epochs: int | None,
-                  baseline_only: bool, dry_run: bool) -> int:
+                  baseline_only: bool, dry_run: bool,
+                  variants: Path | None = None) -> int:
     rid = new_round_id()
-    rc = cmd_propose(target, hypothesis, baseline_only=baseline_only, round_id=rid)
+    rc = cmd_propose(target, hypothesis,
+                     baseline_only=baseline_only, round_id=rid, variants=variants)
     if rc != 0:
         return rc
     cmd_rank(rid)
@@ -908,8 +910,11 @@ def main(argv: list[str] | None = None) -> int:
     p_round.add_argument("--target", required=True, choices=list(TARGETS))
     p_round.add_argument("--hypothesis", default="")
     p_round.add_argument("--epochs", type=int, default=None)
-    p_round.add_argument("--baseline-only", action="store_true",
-                         help="run only the A (incumbent baseline); useful for first run")
+    round_mode = p_round.add_mutually_exclusive_group()
+    round_mode.add_argument("--baseline-only", action="store_true",
+                            help="run only the A (incumbent baseline); useful for first run")
+    round_mode.add_argument("--variants", type=Path, default=None,
+                            help="JSONL file: run A + one Candidate per line (sweep mode)")
     p_round.add_argument("--dry-run", action="store_true")
 
     p_status = sub.add_parser("status",
@@ -967,7 +972,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_promote(args.round)
     if args.cmd == "run-round":
         return cmd_run_round(args.target, args.hypothesis, args.epochs,
-                             baseline_only=args.baseline_only, dry_run=args.dry_run)
+                             baseline_only=args.baseline_only, dry_run=args.dry_run,
+                             variants=args.variants)
     if args.cmd == "status":
         return cmd_status(target=args.target, run_id=args.run)
     if args.cmd == "autoreason":

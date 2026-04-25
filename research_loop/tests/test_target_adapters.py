@@ -91,7 +91,13 @@ def test_dino_v2_results_path_is_v2():
 
 
 def test_train_dry_run_does_not_execute():
-    """dry_run=True must return without launching any subprocess."""
-    rc, log = StudentV2Target().train(max_epochs=1, dry_run=True)
-    assert rc == 0
-    assert "[dry-run]" in log
+    """dry_run=True must return a noop TrainOutcome without launching any subprocess."""
+    a = Candidate(
+        kind="A", target="student_v2", round_id="r-dry",
+        hypothesis="incumbent", expected_metric="0",
+        changed_files=[], risks=[], rollback="N/A", patch="",
+    )
+    outcome = StudentV2Target().train(a, max_epochs=1, dry_run=True)
+    assert outcome.status == "noop"
+    assert outcome.metrics == {}
+    assert outcome.return_code == 0

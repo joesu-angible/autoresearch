@@ -15,3 +15,4 @@ class DinoV2Target(TargetAdapter):
     RESULTS_TSV = REPO / "dino_finetune" / "results_v2.tsv"
     METRICS_JSON = REPO / "dino_finetune" / "output" / "metrics_final_v2.json"
     TRAIN_CMD = ["python", "train_dino_v2.py"]
+    DEFAULT_EPOCHS = 20

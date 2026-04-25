@@ -79,22 +79,49 @@ The file `student_finetune/productness_val_paths.txt` is gitignored. Regenerate 
 # expect: ~45k holdout paths from 450k total (10%)
 ```
 
-### 2. Train V2 (two stages, no manual steps between them)
+### 2. Train V2 via the research_loop tournament (issue #4 main flow)
+
+The training driver is the autoreason tournament — every run is structured as a tournament round (A=incumbent, B/AB=experiments). The first production run is the seed: a "baseline-only" round with kind=A, no patch — establishes the row in `results_v2.tsv` that all future rounds challenge.
 
 ```bash
-# Stage 1 — DINOv3 teacher (~50h on 4090)
-cd dino_finetune
-nohup ../.venv/bin/python -u train_dino_v2.py > run_v2_production.log 2>&1 &
+# Stage 1 — DINOv3 teacher production baseline (~50h on 4090)
+nohup ../.venv/bin/python -u -m research_loop.tournament run-round \
+    --target dino_v2 \
+    --hypothesis "v2 teacher production baseline (productness ON, smoothing+focal)" \
+    --baseline-only \
+    > dino_finetune/run_v2_production.log 2>&1 &
 
-# Stage 2 — LCNet student (~6-7h)
-cd student_finetune
-nohup ../.venv/bin/python -u train_v2.py --max-epochs 30 \
-  > run_v2_production.log 2>&1 &
+# Stage 2 — LCNet student production baseline (~6-7h)
+nohup ../.venv/bin/python -u -m research_loop.tournament run-round \
+    --target student_v2 \
+    --hypothesis "v2 student production baseline (productness ON, smoothing+focal)" \
+    --baseline-only \
+    > student_finetune/run_v2_production.log 2>&1 &
 ```
 
-Stage 1 writes the LoRA adapter to `dino_finetune/output/best_adapter/`. Stage 2 reads it from the same path. The teacher embedding cache is keyed on the adapter's SHA-256 prefix (`workspace/output/teacher_cache/dinov3_ft/<adapter_sha>/`), so retraining the teacher → new adapter weights → new sha → fresh cache subdir built automatically on first student epoch. **No `mv`, no `rm -rf`, no swap.**
+What `run-round --baseline-only` does:
+1. **propose**: assigns a fresh `round_id`, writes a kind=A candidate to `research_loop/history.jsonl` (no B/AB — `--baseline-only`)
+2. **rank**: judges score the single A candidate
+3. **run**: subprocess `train_v2.py` (or `train_dino_v2.py`) with `DEFAULT_EPOCHS` (30 / 20)
+4. After training: parses `metrics_final_v2.json`, writes an `Outcome` record to `history.jsonl`, appends a row to `results_v2.tsv` via the V2-only adapter
+5. **promote**: applies `decide()` guardrails. With only A in the round, A wins by default; a `Decision` record records the deployment-gate verdict from `is_deployable()`.
+
+Stage 1 writes the LoRA adapter to `dino_finetune/output/best_adapter/`. Stage 2 reads it from the same path. The teacher embedding cache is keyed on the adapter's SHA-256 prefix (`workspace/output/teacher_cache/dinov3_ft/<adapter_sha>/`), so a teacher retrain → new sha → fresh cache subdir built automatically on first student epoch. No `mv`, no `rm -rf`, no swap.
 
 Stage 2 first-epoch is ~14 min (cache warmup); subsequent epochs ~5–8 min.
+
+### 2b. Subsequent experiments (after baseline lands)
+
+```bash
+# Propose a real experiment (B/AB will need real patches before run)
+.venv/bin/python -m research_loop.tournament propose \
+    --target student_v2 \
+    --hypothesis "raise commodity_ratio from 0.15 to 0.20"
+# Edit the patches in research_loop/history.jsonl, then:
+.venv/bin/python -m research_loop.tournament run --candidate <B_id>
+.venv/bin/python -m research_loop.tournament run --candidate <AB_id>
+.venv/bin/python -m research_loop.tournament promote --round <round_id>
+```
 
 Watch progress:
 

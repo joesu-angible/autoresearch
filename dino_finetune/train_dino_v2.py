@@ -942,8 +942,37 @@ def main():
     print(f"METRIC: {final['combined']:.6f}")
     logger.info(f"Total training time: {total_time:.1f}s")
 
+    # Dump structured metrics so the tournament adapter can parse them.
+    import json
+    metrics_out = {
+        "status": "success",
+        "version": "v2",
+        "combined_metric": float(final["combined"]),
+        "best_combined": float(best_combined),
+        "recall_at_1": float(final["recall@1"]),
+        "recall_at_5": float(final.get("recall@5", 0.0)),
+        "mean_cosine": float(final["mean_cosine"]),
+        "peak_vram_mb": float(peak_vram_mb),
+        "elapsed_seconds": round(total_time, 1),
+        "epochs_trained": int(epoch),
+    }
+    metrics_path = Path(ADAPTER_OUTPUT_DIR).parent / "metrics_final_v2.json"
+    metrics_path.write_text(json.dumps(metrics_out, indent=2))
+    logger.info(f"Wrote {metrics_path}")
+
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="V2 DINOv3 LoRA fine-tuning")
+    parser.add_argument(
+        "--max-epochs", type=int, default=None,
+        help=f"Override module-level EPOCHS (default {EPOCHS})",
+    )
+    args = parser.parse_args()
+    if args.max_epochs is not None:
+        EPOCHS = args.max_epochs  # noqa: F811 — module-level rebind for tournament use
+        logger.info(f"EPOCHS overridden via CLI: {EPOCHS}")
+
     try:
         main()
     except torch.cuda.OutOfMemoryError:

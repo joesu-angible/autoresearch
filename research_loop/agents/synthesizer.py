@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from research_loop.agents.client import AgentClient
+from research_loop.agents.client import LLMClient
 from research_loop.agents.author import (
     PatchProposal,
     _FENCE_RE,
@@ -104,7 +104,7 @@ class SynthesizerAgent:
 
     SYSTEM_PROMPT = SYNTHESIZER_SYSTEM_PROMPT
 
-    def __init__(self, client: AgentClient) -> None:
+    def __init__(self, client: LLMClient) -> None:
         self.client = client
 
     def synthesize(

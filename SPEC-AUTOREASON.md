@@ -26,12 +26,12 @@ Success = a `tournament autoreason` invocation can autonomously drive a multi-pa
 
 ## Tech stack
 
-- **LLM SDK**: Anthropic SDK (`anthropic` Python package). API key from `ANTHROPIC_API_KEY` env, falling back to `~/.hermes/.env` if loaded by repo convention.
-- **Model**: `claude-sonnet-4-6` for all three agent roles. Single model first (multi-tier later).
+- **LLM access**: subprocess to a local CLI — `hermes`, `claude`, or `codex`. **No raw API keys in this repo.** Auth and rate limits stay in whichever tool the operator already runs. Selection via `--llm-cli` flag or `AUTORESEARCH_LLM_CLI` env; default `hermes` (matches the existing `student_finetune/run_v2.sh` convention).
+- **Model passthrough**: `--llm-model` flag forwarded to whichever CLI is selected (e.g. `anthropic/claude-sonnet-4` for hermes, `claude-sonnet-4-6` for claude, `gpt-5` for codex).
 - **Patch format**: unified diff applied via `subprocess.run(["git", "apply", ...])`. Revert via `git apply -R`.
 - **Existing**: Python 3.10+, PyTorch, the research_loop infrastructure already in master.
 
-No new heavy dependencies — only `anthropic` SDK is added.
+No new pip dependencies — autoreason runs entirely on already-installed CLIs.
 
 ## Commands
 

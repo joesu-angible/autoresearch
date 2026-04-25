@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from research_loop.agents.client import AgentClient
+from research_loop.agents.client import LLMClient
 
 
 CRITIC_SYSTEM_PROMPT = """You are a senior ML engineer reviewing a production retail-product re-identification training script and its recent experiment history. Your only job is to identify concrete problems — do not propose fixes.
@@ -78,7 +78,7 @@ class CriticAgent:
 
     SYSTEM_PROMPT = CRITIC_SYSTEM_PROMPT
 
-    def __init__(self, client: AgentClient) -> None:
+    def __init__(self, client: LLMClient) -> None:
         self.client = client
 
     def critique(

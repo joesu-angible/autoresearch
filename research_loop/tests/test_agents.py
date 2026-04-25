@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from research_loop.agents.author import AuthorBAgent, PatchProposal, _parse_patch_proposal
-from research_loop.agents.client import AgentClient
+from research_loop.agents.client import LLMClient
 from research_loop.agents.critic import Critique, CriticAgent, _parse_critique
 from research_loop.agents.synthesizer import SynthesizerAgent, _parse_synthesis
 
@@ -51,7 +51,7 @@ def test_parse_critique_no_actionable_problems():
 
 
 def test_critic_agent_calls_client_with_low_temperature():
-    mock_client = MagicMock(spec=AgentClient)
+    mock_client = MagicMock(spec=LLMClient)
     mock_client.call.return_value = CRITIC_RESPONSE_SAMPLE
     agent = CriticAgent(mock_client)
     out = agent.critique(
@@ -126,7 +126,7 @@ def test_author_agent_system_prompt_forbids_v1_edits():
 
 
 def test_author_agent_calls_client_with_higher_temperature():
-    mock_client = MagicMock(spec=AgentClient)
+    mock_client = MagicMock(spec=LLMClient)
     mock_client.call.return_value = AUTHOR_B_RESPONSE_SAMPLE
     agent = AuthorBAgent(mock_client)
     out = agent.author(
@@ -167,7 +167,7 @@ def test_parse_synthesis_extracts_rationale_and_diff():
 
 def test_synthesizer_uses_anonymized_labels_in_user_message():
     """Per autoreason paper §2: synthesizer sees X / Y, not A / B."""
-    mock_client = MagicMock(spec=AgentClient)
+    mock_client = MagicMock(spec=LLMClient)
     mock_client.call.return_value = SYNTH_RESPONSE_SAMPLE
     agent = SynthesizerAgent(mock_client)
     agent.synthesize(
@@ -185,7 +185,7 @@ def test_synthesizer_uses_anonymized_labels_in_user_message():
 
 def test_synthesizer_does_not_see_metrics():
     """Per project decision 2026-04-25: synthesizer sees only patches, no metric history."""
-    mock_client = MagicMock(spec=AgentClient)
+    mock_client = MagicMock(spec=LLMClient)
     mock_client.call.return_value = SYNTH_RESPONSE_SAMPLE
     agent = SynthesizerAgent(mock_client)
     agent.synthesize(
@@ -209,7 +209,7 @@ def test_three_agents_make_three_independent_calls():
     Each .critique() / .author() / .synthesize() call invokes
     AgentClient.call exactly once with a fresh user message.
     """
-    mock_client = MagicMock(spec=AgentClient)
+    mock_client = MagicMock(spec=LLMClient)
     mock_client.call.side_effect = [
         CRITIC_RESPONSE_SAMPLE,
         AUTHOR_B_RESPONSE_SAMPLE,

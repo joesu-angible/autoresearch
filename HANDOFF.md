@@ -170,25 +170,57 @@ Epoch 30/30 | loss=... distill=... arc=... cosine=...
 V2 TRAINING COMPLETE
 ```
 
-### 2d. Real-LLM smoke (T8 — pre-flight before launching autoreason)
+### 2d. LLM CLI selection
 
-Before kicking off a multi-hour autoreason run, verify the LLM round-trip works against your `ANTHROPIC_API_KEY`. This costs ~$0.05 (3 Sonnet 4.6 calls), takes ~30 seconds, and never touches the GPU:
+Per project decision, autoreason calls a local CLI (`hermes`, `claude`, or `codex`) — not raw API keys. Auth, rate limits, model selection, and provider routing all live in your already-configured tool.
+
+| CLI | Selection | Model passthrough |
+|---|---|---|
+| `hermes` *(default)* | `--llm-cli hermes` | `-m anthropic/claude-sonnet-4` (or any `provider/model` string Hermes accepts) |
+| `claude` | `--llm-cli claude` | `--model claude-sonnet-4-6` |
+| `codex` | `--llm-cli codex` | `--model gpt-5` (passed via `codex exec -c model=...`) |
+
+Selection order: explicit `--llm-cli` flag → `AUTORESEARCH_LLM_CLI` env var → default `hermes`.
 
 ```bash
-ANTHROPIC_API_KEY=sk-... .venv/bin/python -m research_loop.tools.autoreason_smoke
+# default (hermes, auto-pick provider)
+.venv/bin/python -m research_loop.tournament autoreason --target student_v2 --max-passes 1 --dry-run
+
+# claude with a specific model
+.venv/bin/python -m research_loop.tournament autoreason \
+    --target student_v2 --max-passes 1 --dry-run \
+    --llm-cli claude --llm-model claude-sonnet-4-6
+
+# codex
+.venv/bin/python -m research_loop.tournament autoreason \
+    --target student_v2 --max-passes 1 --dry-run \
+    --llm-cli codex
+```
+
+### 2e. Real-LLM smoke (T8 — pre-flight before launching autoreason)
+
+Before kicking off a multi-hour autoreason run, verify the round-trip via the chosen CLI. ~30 seconds, ~3 CLI invocations:
+
+```bash
+# default hermes
+.venv/bin/python -m research_loop.tools.autoreason_smoke
+
+# claude
+.venv/bin/python -m research_loop.tools.autoreason_smoke --llm-cli claude --llm-model claude-sonnet-4-6
+
+# codex
+.venv/bin/python -m research_loop.tools.autoreason_smoke --llm-cli codex
 ```
 
 What it verifies:
 
-- API key is reachable (env or `~/.hermes/.env`)
+- The selected CLI is callable and returns text
 - Critic returns a parseable Critique with a non-empty summary
 - Author B's diff passes `git apply --check` (or returns NO_PATCH)
 - Synthesizer's diff passes `git apply --check` (or returns NO_PATCH)
 - Working tree is unchanged after the smoke (`git apply --check` only, never applied)
 
-Run this once before any production `tournament autoreason` invocation. If the smoke fails, the autoreason loop will fail in the same place — but on a 10-hour run instead of 30 seconds.
-
-> **T8 status**: smoke script delivered (`research_loop/tools/autoreason_smoke.py`). The dev environment that built this PR has Claude Code OAuth but no raw `ANTHROPIC_API_KEY` exposed to the shell, so the manual verification has been deferred to the operator who launches the production run. Re-record the smoke output here once executed.
+Run this before any production `tournament autoreason` invocation. If the smoke fails, the autoreason loop will fail in the same place — but on a 10-hour run instead of 30 seconds.
 
 ### 3. After the run — export ONNX + log to results_v2.tsv
 

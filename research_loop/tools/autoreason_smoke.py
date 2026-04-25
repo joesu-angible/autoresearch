@@ -1,28 +1,35 @@
 """Manual real-LLM smoke for the autoreason loop (T8).
 
-Runs ONE autoreason pass against the real Anthropic API in dry-run mode
-(no GPU subprocess). Confirms:
+Runs ONE autoreason pass against a real local LLM CLI (hermes, claude, or
+codex) in dry-run mode (no GPU subprocess). Confirms:
 
-  1. AgentClient can authenticate (ANTHROPIC_API_KEY is reachable)
+  1. The chosen CLI is callable and returns text
   2. CriticAgent produces a parseable Critique with at least a summary
   3. AuthorBAgent produces a unified diff that `git apply --check` accepts
      (or NO_PATCH if the critic found nothing actionable)
   4. SynthesizerAgent produces a unified diff that `git apply --check`
      accepts (or NO_PATCH)
-  5. Working tree is restored after each candidate (via apply_patch's
-     try/finally — verified by git status check at the end)
+  5. Working tree is unchanged at the end (smoke only `--check`s, never applies)
 
-Cost: ~3 LLM calls × Sonnet 4.6 ≈ $0.05 per smoke run.
+Cost: ~3 CLI invocations. Per-call latency depends on which CLI / model is
+selected.
 
 Usage:
-  ANTHROPIC_API_KEY=sk-... .venv/bin/python -m research_loop.tools.autoreason_smoke
+  # hermes (default — uses repo's existing autoresearch CLI)
+  .venv/bin/python -m research_loop.tools.autoreason_smoke
+
+  # claude with explicit model
+  .venv/bin/python -m research_loop.tools.autoreason_smoke --llm-cli claude --llm-model claude-sonnet-4-6
+
+  # codex
+  .venv/bin/python -m research_loop.tools.autoreason_smoke --llm-cli codex
 
 Requires a clean working tree. Safe to re-run.
 """
 
 from __future__ import annotations
 
-import json
+import argparse
 import subprocess
 import sys
 from pathlib import Path
@@ -31,18 +38,20 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Real-LLM smoke for the autoreason loop")
+    parser.add_argument("--llm-cli", choices=["hermes", "claude", "codex"], default=None,
+                        help="local LLM CLI (default: AUTORESEARCH_LLM_CLI env or 'hermes')")
+    parser.add_argument("--llm-model", default=None,
+                        help="model name forwarded to the selected CLI")
+    parser.add_argument("--llm-provider", default="auto",
+                        help="hermes provider routing (ignored by claude/codex)")
+    args = parser.parse_args()
+
     print(f"=== autoreason real-LLM smoke ===")
     print(f"Repo: {REPO_ROOT}")
     sys.path.insert(0, str(REPO_ROOT))
 
-    # 1. Resolve API key (will raise if missing)
-    from research_loop.agents.client import AgentClient, resolve_api_key
-    try:
-        key = resolve_api_key()
-        print(f"API key found: {key[:10]}...{key[-4:]}")
-    except RuntimeError as e:
-        print(f"FAIL: {e}", file=sys.stderr)
-        return 1
+    from research_loop.agents.client import make_llm_client
 
     # 2. Working tree must be clean — autoreason refuses dirty trees
     res = subprocess.run(
@@ -54,8 +63,9 @@ def main() -> int:
         return 1
     print("Working tree clean.")
 
-    # 3. Build agents
-    client = AgentClient()
+    # 3. Build agents — pick the CLI requested by the operator
+    client = make_llm_client(args.llm_cli, model=args.llm_model, provider=args.llm_provider)
+    print(f"LLM client: {client.name}" + (f" model={args.llm_model}" if args.llm_model else ""))
     from research_loop.agents.author import AuthorBAgent
     from research_loop.agents.critic import CriticAgent
     from research_loop.agents.synthesizer import SynthesizerAgent

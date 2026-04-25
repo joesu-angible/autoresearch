@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from research_loop.agents.client import AgentClient
+from research_loop.agents.client import LLMClient
 from research_loop.targets._base import V1_FORBIDDEN_PATHS
 
 
@@ -111,7 +111,7 @@ class AuthorBAgent:
 
     SYSTEM_PROMPT = AUTHOR_B_SYSTEM_PROMPT
 
-    def __init__(self, client: AgentClient) -> None:
+    def __init__(self, client: LLMClient) -> None:
         self.client = client
 
     def author(

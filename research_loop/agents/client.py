@@ -1,77 +1,112 @@
-"""Single-shared Anthropic SDK wrapper for autoreason agent calls.
+"""LLM client abstraction with multi-CLI support.
 
-Each `.call(system, user)` is a fresh single-shot Messages request — no chat
-history persisted across calls — so the autoreason "fresh agent" invariant
-holds even though all three roles share one client instance. The system block
-gets `cache_control: ephemeral` so the prompt cache amortizes the role's
-fixed instructions across passes within a 5-minute window.
+Per project decision 2026-04-25, autoreason calls go through one of the
+user's existing local CLIs (`hermes`, `claude`, `codex`) — not via raw API
+keys. This keeps auth, rate-limit handling, model selection, and provider
+routing in the user's already-configured tools instead of duplicating them
+in this repo.
 
-API key sources (first match wins):
-  1. ANTHROPIC_API_KEY environment variable
-  2. ~/.hermes/.env file (key = value lines), to align with the repo's
-     existing Hermes Agent integration
+Each CLI client subprocess-shells its CLI, sending a combined system+user
+prompt and returning stdout. All three roles (Critic / Author B /
+Synthesizer) share one client instance — the autoreason "fresh agent"
+invariant is preserved because each `.call()` is a one-shot subprocess
+with no shared state.
 
-Default model is `claude-sonnet-4-6` per SPEC §Tech stack — Sonnet 4.6
-is fast enough for hour-scale autoreason loops and capable enough on ML
-training code. Override per-instance via the `model` constructor arg.
+Selection (CLI flag → env → default):
+  --llm-cli {hermes|claude|codex}    explicit choice
+  AUTORESEARCH_LLM_CLI=hermes        env override
+  default: hermes (matches repo's existing autoresearch convention)
+
+Per-CLI model override:
+  --llm-model NAME                   passed through to whichever CLI
 """
 
 from __future__ import annotations
 
 import os
-from pathlib import Path
+import subprocess
+from abc import ABC, abstractmethod
+from typing import Literal
 
-import anthropic
+LlmCliName = Literal["hermes", "claude", "codex"]
+DEFAULT_CLI: LlmCliName = "hermes"
 
-DEFAULT_MODEL = "claude-sonnet-4-6"
-DEFAULT_MAX_TOKENS = 4096
-
-
-def _load_dotenv(path: Path) -> dict[str, str]:
-    """Tolerant .env parser — KEY=VALUE per line, # comments, no quotes magic."""
-    out: dict[str, str] = {}
-    if not path.exists():
-        return out
-    for raw in path.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        out[key.strip()] = val.strip().strip('"').strip("'")
-    return out
+# How long to wait for one CLI invocation. Generous because some CLIs do
+# tool-calling internally and can take ~minutes per response. Caller can
+# override via the timeout kwarg.
+DEFAULT_CALL_TIMEOUT_SECONDS = 600.0
 
 
-def resolve_api_key() -> str:
-    """Find an Anthropic API key in env or in ~/.hermes/.env. Raise if missing."""
-    if (key := os.environ.get("ANTHROPIC_API_KEY")):
-        return key
-    hermes = _load_dotenv(Path.home() / ".hermes" / ".env")
-    if (key := hermes.get("ANTHROPIC_API_KEY")):
-        return key
-    raise RuntimeError(
-        "ANTHROPIC_API_KEY not found. Set the environment variable or "
-        "add it to ~/.hermes/.env. autoreason cannot run without LLM access."
+def _combine_prompt(system: str, user: str) -> str:
+    """Merge system + user into a single prompt for CLIs without separate system flags.
+
+    The XML-ish framing is robust across providers and models; CLIs that have
+    a native --system-prompt flag (claude) override this in their subclass.
+    """
+    return (
+        "<system_instructions>\n"
+        f"{system}\n"
+        "</system_instructions>\n\n"
+        "<user_request>\n"
+        f"{user}\n"
+        "</user_request>"
     )
 
 
-class AgentClient:
-    """Thin wrapper around `anthropic.Anthropic` for the three autoreason roles.
+class LLMClient(ABC):
+    """Abstract single-shot LLM caller. Each call() is independent — no history."""
 
-    Each `.call()` is a fresh single-shot — no chat history. System prompts
-    are sent with `cache_control: ephemeral` so repeated calls with the
-    same role-specific system text hit the cache.
+    name: str = "abstract"
+
+    @abstractmethod
+    def call(
+        self,
+        system: str,
+        user: str,
+        *,
+        temperature: float = 0.8,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> str:
+        """Return the assistant text. May raise RuntimeError on CLI failure."""
+
+
+def _run(cmd: list[str], *, timeout: float, stdin: str | None = None) -> str:
+    """Run a subprocess; return stdout; raise RuntimeError with full context on failure."""
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=stdin,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"LLM CLI call timed out after {timeout}s: {' '.join(cmd[:3])}..."
+        ) from e
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"LLM CLI failed (exit {proc.returncode}): {' '.join(cmd[:3])}...\n"
+            f"stderr: {proc.stderr[-2000:]}"
+        )
+    return proc.stdout
+
+
+class HermesCliClient(LLMClient):
+    """`hermes chat -q PROMPT [-m MODEL] [--provider P]`.
+
+    Hermes is the repo's existing autoresearch driver; matches what
+    student_finetune/run_v2.sh already uses. Default provider 'auto' lets
+    Hermes pick.
     """
 
-    def __init__(
-        self,
-        *,
-        model: str = DEFAULT_MODEL,
-        max_tokens: int = DEFAULT_MAX_TOKENS,
-        api_key: str | None = None,
-    ) -> None:
+    name = "hermes"
+
+    def __init__(self, *, model: str | None = None, provider: str = "auto") -> None:
         self.model = model
-        self.max_tokens = max_tokens
-        self.client = anthropic.Anthropic(api_key=api_key or resolve_api_key())
+        self.provider = provider
 
     def call(
         self,
@@ -80,22 +115,122 @@ class AgentClient:
         *,
         temperature: float = 0.8,
         max_tokens: int | None = None,
+        timeout: float | None = None,
     ) -> str:
-        """Run one fresh-agent inference; return the raw assistant text.
+        prompt = _combine_prompt(system, user)
+        cmd = [
+            "hermes", "chat",
+            "-q", prompt,
+            "--yolo",            # skip interactive confirms
+            "--max-turns", "1",  # single-shot — no agentic looping inside hermes
+            "--ignore-rules",    # don't apply user-config rules to autoreason
+            "-Q",                # quiet (suppress banner / status output)
+        ]
+        if self.model is not None:
+            cmd += ["-m", self.model]
+        if self.provider:
+            cmd += ["--provider", self.provider]
+        return _run(cmd, timeout=timeout or DEFAULT_CALL_TIMEOUT_SECONDS).strip()
 
-        Per autoreason paper §2: temperature 0.8 for authors / synthesizer
-        (encourage diverse revisions); 0.3 for judges (consistent evaluation).
-        Caller picks the right value for its role.
-        """
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=max_tokens or self.max_tokens,
-            system=[{
-                "type": "text",
-                "text": system,
-                "cache_control": {"type": "ephemeral"},
-            }],
-            messages=[{"role": "user", "content": user}],
-            temperature=temperature,
+
+class ClaudeCliClient(LLMClient):
+    """`claude -p ... --system-prompt ...`.
+
+    Uses Claude Code's `--print` non-interactive mode with a separate
+    --system-prompt flag (so the system text is properly framed, not
+    merged into user input).
+    """
+
+    name = "claude"
+
+    def __init__(self, *, model: str | None = None) -> None:
+        self.model = model
+
+    def call(
+        self,
+        system: str,
+        user: str,
+        *,
+        temperature: float = 0.8,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> str:
+        cmd = [
+            "claude",
+            "-p", user,
+            "--system-prompt", system,
+            "--bare",                              # minimal mode, no auto-memory etc.
+            "--dangerously-skip-permissions",      # autoreason runs unattended
+        ]
+        if self.model is not None:
+            cmd += ["--model", self.model]
+        return _run(cmd, timeout=timeout or DEFAULT_CALL_TIMEOUT_SECONDS).strip()
+
+
+class CodexCliClient(LLMClient):
+    """`codex exec [PROMPT] [--config model=NAME]`.
+
+    Codex doesn't have a separate --system-prompt; we combine system + user
+    via _combine_prompt() and pass as the single argument. Model selection
+    via -c model=... config override.
+    """
+
+    name = "codex"
+
+    def __init__(self, *, model: str | None = None) -> None:
+        self.model = model
+
+    def call(
+        self,
+        system: str,
+        user: str,
+        *,
+        temperature: float = 0.8,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+    ) -> str:
+        prompt = _combine_prompt(system, user)
+        cmd = ["codex", "exec"]
+        if self.model is not None:
+            cmd += ["-c", f"model={self.model}"]
+        cmd += [prompt]
+        return _run(cmd, timeout=timeout or DEFAULT_CALL_TIMEOUT_SECONDS).strip()
+
+
+_REGISTRY: dict[str, type[LLMClient]] = {
+    "hermes": HermesCliClient,
+    "claude": ClaudeCliClient,
+    "codex":  CodexCliClient,
+}
+
+
+def make_llm_client(
+    cli: LlmCliName | None = None,
+    *,
+    model: str | None = None,
+    provider: str = "auto",
+) -> LLMClient:
+    """Factory: pick a CLI by name, env, or fall back to the default.
+
+    Selection order:
+      1. explicit `cli` arg
+      2. AUTORESEARCH_LLM_CLI environment variable
+      3. DEFAULT_CLI ("hermes")
+
+    `provider` is Hermes-specific; ignored by Claude / Codex clients.
+    """
+    chosen = cli or os.environ.get("AUTORESEARCH_LLM_CLI") or DEFAULT_CLI
+    if chosen not in _REGISTRY:
+        raise ValueError(
+            f"Unknown LLM CLI: {chosen!r}. "
+            f"Supported: {sorted(_REGISTRY)}."
         )
-        return next(block.text for block in response.content if block.type == "text")
+    cls = _REGISTRY[chosen]
+    if cls is HermesCliClient:
+        return HermesCliClient(model=model, provider=provider)
+    return cls(model=model)
+
+
+# Backwards-compat alias — older code imports `AgentClient`. Now an alias for
+# the factory so the existing imports keep working without churn.
+AgentClient = make_llm_client

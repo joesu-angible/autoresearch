@@ -12,6 +12,20 @@ All three share a single AgentClient (Anthropic SDK wrapper with prompt
 caching enabled on system prompts) but never share messages.
 """
 
-from research_loop.agents.client import AgentClient
+from research_loop.agents.client import (
+    AgentClient,
+    ClaudeCliClient,
+    CodexCliClient,
+    HermesCliClient,
+    LLMClient,
+    make_llm_client,
+)
 
-__all__ = ["AgentClient"]
+__all__ = [
+    "AgentClient",  # backwards-compat alias for make_llm_client
+    "ClaudeCliClient",
+    "CodexCliClient",
+    "HermesCliClient",
+    "LLMClient",
+    "make_llm_client",
+]

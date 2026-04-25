@@ -349,6 +349,9 @@ def cmd_autoreason(
     max_seconds_per_candidate: float | None,
     hypothesis_seed: str,
     dry_run: bool,
+    llm_cli: str | None = None,
+    llm_model: str | None = None,
+    llm_provider: str = "auto",
     agent_client_factory=None,
 ) -> int:
     """Fully autonomous autoreason loop.
@@ -358,8 +361,12 @@ def cmd_autoreason(
     Winner becomes the new A; loop terminates after `convergence` consecutive
     A wins or after `max_passes` total passes.
 
-    `agent_client_factory` is injected for testing — production passes None
-    and we construct a real AgentClient.
+    LLM access is via subprocess to a local CLI (hermes / claude / codex).
+    `llm_cli` defaults to AUTORESEARCH_LLM_CLI env or "hermes". `llm_model`
+    is passed through to whichever CLI is selected.
+
+    `agent_client_factory` is injected for testing — production callers pass
+    None and we construct a real CLI-backed client.
     """
     if target not in TARGETS:
         print(f"Unknown target: {target}", file=sys.stderr)
@@ -373,11 +380,14 @@ def cmd_autoreason(
         )
         return 2
 
-    # Lazy-construct the AgentClient so dry-run / tests don't need API keys.
     if agent_client_factory is None:
-        from research_loop.agents.client import AgentClient
-        agent_client_factory = AgentClient
+        from research_loop.agents.client import make_llm_client
+        agent_client_factory = lambda: make_llm_client(
+            llm_cli, model=llm_model, provider=llm_provider,
+        )
     client = agent_client_factory()
+    print(f"  LLM client: {getattr(client, 'name', type(client).__name__)}"
+          + (f" model={llm_model}" if llm_model else ""))
 
     from research_loop.agents.author import AuthorBAgent
     from research_loop.agents.critic import CriticAgent
@@ -571,6 +581,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="initial hypothesis context shown to A baseline")
     p_auto.add_argument("--dry-run", action="store_true",
                         help="skip subprocess training; record noop outcomes")
+    p_auto.add_argument("--llm-cli", choices=["hermes", "claude", "codex"], default=None,
+                        help="which local LLM CLI to invoke (default: AUTORESEARCH_LLM_CLI env or 'hermes')")
+    p_auto.add_argument("--llm-model", default=None,
+                        help="model name passed to the selected CLI (e.g. 'anthropic/claude-sonnet-4' for hermes)")
+    p_auto.add_argument("--llm-provider", default="auto",
+                        help="provider routing for hermes (ignored by claude/codex); default 'auto'")
 
     args = p.parse_args(argv)
 
@@ -593,6 +609,9 @@ def main(argv: list[str] | None = None) -> int:
             max_seconds_per_candidate=args.max_seconds_per_candidate,
             hypothesis_seed=args.hypothesis_seed,
             dry_run=args.dry_run,
+            llm_cli=args.llm_cli,
+            llm_model=args.llm_model,
+            llm_provider=args.llm_provider,
         )
     return 2
 

@@ -186,7 +186,7 @@ The teacher embedding cache directory is keyed on a SHA-256 prefix of the LoRA a
 workspace/output/teacher_cache/dinov3_ft/<adapter_sha8>/<md5(image_path)>.npy
 ```
 
-When the teacher is retrained (or rolled back) the student trainer detects the new adapter sha automatically and writes to a fresh subdir; old subdirs stay around for A/B comparison and rollback. **No manual bridge step** between teacher retraining and student training — the previous workflow ("rename adapter, rm old cache") was a footgun (silent staleness if forgotten) and is eliminated.
+Teacher retraining writes in-place to `dino_finetune/output/best_adapter/` (single canonical path). The student trainer detects the new adapter sha automatically and writes to a fresh cache subdir. **No manual bridge step**: no rename, no `rm -rf`, no backup ceremony — train teacher, then train student, done.
 
 Implementation: `_adapter_sha8()` helper in `student_finetune/train_v2.py` computes the sha at startup and overrides `TEACHER_REGISTRY[TEACHER]["cache_dir"]` to include the sha subdir.
 

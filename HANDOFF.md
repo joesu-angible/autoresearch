@@ -79,18 +79,22 @@ The file `student_finetune/productness_val_paths.txt` is gitignored. Regenerate 
 # expect: ~45k holdout paths from 450k total (10%)
 ```
 
-### 2. Run the next outstanding task — full 30-epoch V2 production
+### 2. Train V2 (two stages, no manual steps between them)
 
 ```bash
+# Stage 1 — DINOv3 teacher (~50h on 4090)
+cd dino_finetune
+nohup ../.venv/bin/python -u train_dino_v2.py > run_v2_production.log 2>&1 &
+
+# Stage 2 — LCNet student (~6-7h)
 cd student_finetune
 nohup ../.venv/bin/python -u train_v2.py --max-epochs 30 \
   > run_v2_production.log 2>&1 &
-echo "PID=$!"
 ```
 
-ETA ~7 h on a 4090. First epoch is slow (~14 min) because the DINOv3 teacher cache builds incrementally; subsequent epochs are faster (~5–8 min) once the cache is warm in `workspace/output/teacher_cache/dinov3_ft/<adapter_sha>/`.
+Stage 1 writes the LoRA adapter to `dino_finetune/output/best_adapter/`. Stage 2 reads it from the same path. The teacher embedding cache is keyed on the adapter's SHA-256 prefix (`workspace/output/teacher_cache/dinov3_ft/<adapter_sha>/`), so retraining the teacher → new adapter weights → new sha → fresh cache subdir built automatically on first student epoch. **No `mv`, no `rm -rf`, no swap.**
 
-> **No manual cache invalidation needed.** The teacher cache directory is keyed on the LoRA adapter's SHA-256 prefix (`<adapter_sha>` above). Retraining the teacher → different adapter weights → different sha → fresh cache subdir → automatic rebuild on first student epoch. Old caches are preserved (useful for A/B comparison or rollback). To save disk, you can manually delete stale `<sha>/` subdirs, but training will not break if you forget.
+Stage 2 first-epoch is ~14 min (cache warmup); subsequent epochs ~5–8 min.
 
 Watch progress:
 

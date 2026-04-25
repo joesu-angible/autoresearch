@@ -37,10 +37,12 @@ EPOCHS = 20
 REID_COMMODITY_DIR = "/data/training/reid/reid_multiple/commodity"
 REID_NEGATIVES_DIR = "/data/training/reid/reid_multiple/negatives"
 
-# -- V2 checkpoint paths (isolated from v1) --
-ADAPTER_OUTPUT_DIR = "dino_finetune/output/best_adapter_v2"
-LAST_ADAPTER_DIR = "dino_finetune/output/last_adapter_v2"
-CHECKPOINT_PATH = "dino_finetune/output/last_adapter_v2/checkpoint.pt"
+# Adapter output. Just `best_adapter` — V2 is the only flavor going forward;
+# the student trainer reads this same path. Cache invalidation is handled by
+# adapter-sha keying in train_v2.py, so overwriting in place is safe.
+ADAPTER_OUTPUT_DIR = "dino_finetune/output/best_adapter"
+LAST_ADAPTER_DIR = "dino_finetune/output/last_adapter"
+CHECKPOINT_PATH = "dino_finetune/output/last_adapter/checkpoint.pt"
 
 import math
 import os

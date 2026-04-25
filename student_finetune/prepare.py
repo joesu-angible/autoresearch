@@ -1331,6 +1331,14 @@ def load_teacher_embeddings(
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 np.save(cache_path, emb)
 
+    # Backfill None entries (unreadable images already warned above) with zeros
+    # of the inferred embedding dim so np.stack succeeds. Without this, a single
+    # unreadable image in a batch crashes the whole cache build.
+    sample = next((e for e in embeddings if e is not None), None)
+    if sample is None:
+        return torch.zeros((len(embeddings), 0), device=device, dtype=torch.float32)
+    zero_emb = np.zeros_like(sample)
+    embeddings = [e if e is not None else zero_emb for e in embeddings]
     return torch.tensor(np.stack(embeddings), device=device, dtype=torch.float32)
 
 

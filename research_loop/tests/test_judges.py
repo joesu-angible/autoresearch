@@ -1,0 +1,85 @@
+"""T10 verification: rule-based judges + ranking tie-break to A."""
+
+from __future__ import annotations
+
+from research_loop.candidate import Candidate
+from research_loop.judges import (
+    aggregate,
+    rank,
+    score_clarity,
+    score_prior_evidence,
+    score_risk,
+)
+
+
+def _a():
+    return Candidate(
+        kind="A",
+        target="student_v2",
+        # quantifiable expected_metric ("0.") so clarity scores 1.0; this lets
+        # us construct a tie scenario against a strong B candidate
+        hypothesis="do nothing — keep current incumbent baseline",
+        expected_metric="combined Δ +0.000 (no change)",
+        changed_files=[],
+        risks=[],
+        rollback="N/A",
+        patch="",
+    )
+
+
+def _b(**over):
+    base = dict(
+        kind="B",
+        target="student_v2",
+        hypothesis="raise commodity_ratio from 0.15 to 0.20 to widen distill coverage",
+        expected_metric="combined +0.004",
+        changed_files=["student_finetune/train_v2.py"],
+        risks=["may dilute label signal"],
+        rollback="combined < 0.855",
+        patch="--- a\n+++ b\n",
+        evidence_refs=["results_v2.tsv:row=8"],
+    )
+    base.update(over)
+    return Candidate(**base)
+
+
+def test_clarity_rewards_quantifiable_metric():
+    assert score_clarity(_b()) == 1.0
+    weak = _b(hypothesis="more data", expected_metric="better")
+    assert score_clarity(weak) == 0.0
+
+
+def test_risk_full_marks_for_a():
+    assert score_risk(_a()) == 1.0
+
+
+def test_risk_requires_both_risks_and_rollback_for_b():
+    no_risks = _b(risks=[])
+    assert score_risk(no_risks) == 0.5
+    no_rollback = _b(rollback="N/A")  # explicit N/A is treated as missing for non-A
+    assert score_risk(no_rollback) == 0.5
+
+
+def test_prior_evidence_rewards_history_refs():
+    assert score_prior_evidence(_b()) == 1.0
+    no_refs = _b(evidence_refs=[])
+    assert score_prior_evidence(no_refs) == 0.5
+
+
+def test_rank_orders_by_aggregate():
+    a = _a()
+    b_strong = _b()
+    b_weak = _b(hypothesis="more data", expected_metric="better", risks=[], evidence_refs=[])
+    ordering = rank([b_weak, a, b_strong])
+    # A is full marks; b_strong full marks too; tie → A first
+    assert ordering[0].kind == "A"
+    assert ordering[1].kind == "B"
+    assert ordering[1].candidate_id == b_strong.id
+    # b_weak last
+    assert ordering[-1].candidate_id == b_weak.id
+
+
+def test_aggregate_in_unit_interval():
+    for c in (_a(), _b()):
+        s = aggregate(c)
+        assert 0.0 <= s <= 1.0

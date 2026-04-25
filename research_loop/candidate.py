@@ -23,7 +23,7 @@ from typing import Iterator, Literal
 
 CandidateKind = Literal["A", "B", "AB"]
 TargetName = Literal["student_v2", "dino_v2"]
-RecordType = Literal["candidate", "outcome", "decision", "critique", "patch_proposal", "synthesis"]
+RecordType = Literal["candidate", "outcome", "decision", "critique", "patch_proposal", "synthesis", "outcome_started"]
 
 REQUIRED_FIELDS: tuple[str, ...] = (
     "id",
@@ -81,6 +81,34 @@ class Candidate:
         data.setdefault("round_id", "")
         data.setdefault("record_type", "candidate")
         return cls(**data)
+
+
+@dataclass
+class OutcomeStartedRecord:
+    """Marks the moment a candidate began training.
+
+    Written by cmd_autoreason immediately before adapter.train() runs. Paired
+    with an Outcome record (same candidate_id) on completion. A candidate
+    with an OutcomeStartedRecord but no matching Outcome is "unfinished" —
+    the runner crashed mid-training. Resume uses this state machine to know
+    which candidates need to be re-run vs which are already done.
+    """
+
+    candidate_id: str
+    round_id: str
+    target: TargetName
+    pass_index: int      # autoreason pass number; 0 for non-autoreason runs
+    kind: CandidateKind
+    run_id: str = ""     # autoreason run_id; "" for non-autoreason runs
+    record_type: RecordType = "outcome_started"
+    started_at: float = field(default_factory=time.time)
+
+    def to_jsonl(self) -> str:
+        return json.dumps(asdict(self), sort_keys=True)
+
+    @classmethod
+    def from_jsonl(cls, line: str) -> "OutcomeStartedRecord":
+        return cls(**json.loads(line))
 
 
 @dataclass
@@ -204,7 +232,7 @@ class SynthesisRecord:
 # I/O helpers
 # ---------------------------------------------------------------------------
 
-HistoryRecord = "Candidate | Outcome | Decision | CritiqueRecord | PatchProposalRecord | SynthesisRecord"
+HistoryRecord = "Candidate | Outcome | Decision | CritiqueRecord | PatchProposalRecord | SynthesisRecord | OutcomeStartedRecord"
 
 
 def append_history(history_path: Path, record: HistoryRecord) -> None:
@@ -277,6 +305,48 @@ def read_syntheses(history_path: Path, round_id: str | None = None) -> Iterator[
         if round_id is not None and raw.get("round_id") != round_id:
             continue
         yield SynthesisRecord(**raw)
+
+
+def read_outcomes_started(history_path: Path, run_id: str | None = None) -> Iterator[OutcomeStartedRecord]:
+    """Yield OutcomeStartedRecord entries; optionally filter by run_id."""
+    for raw in _iter_records(history_path):
+        if raw.get("record_type") != "outcome_started":
+            continue
+        if run_id is not None and raw.get("run_id", "") != run_id:
+            continue
+        yield OutcomeStartedRecord(**raw)
+
+
+def find_unfinished_candidates(history_path: Path, run_id: str) -> list[Candidate]:
+    """Return Candidates that started but never completed for this run_id.
+
+    Pairing rule: the *latest* outcome_started for a candidate_id is matched
+    against any outcome with the same candidate_id. If outcome is missing,
+    the candidate is unfinished. Tolerates duplicate outcome_started records
+    (e.g. resume → recrash → resume).
+
+    Backward compatible: a history.jsonl with no outcome_started records
+    returns []; nothing was tracked, so nothing is reported unfinished.
+    """
+    started_ids: set[str] = set()
+    for s in read_outcomes_started(history_path, run_id=run_id):
+        started_ids.add(s.candidate_id)
+    if not started_ids:
+        return []
+    completed_ids = {o.candidate_id for o in read_outcomes(history_path)}
+    unfinished_ids = started_ids - completed_ids
+    if not unfinished_ids:
+        return []
+    by_id = {c.id: c for c in read_history(history_path) if c.id in unfinished_ids}
+    # Preserve start order for deterministic re-run sequencing
+    ordered: list[Candidate] = []
+    seen: set[str] = set()
+    for s in read_outcomes_started(history_path, run_id=run_id):
+        if s.candidate_id in unfinished_ids and s.candidate_id not in seen:
+            seen.add(s.candidate_id)
+            if s.candidate_id in by_id:
+                ordered.append(by_id[s.candidate_id])
+    return ordered
 
 
 def find_candidate(history_path: Path, candidate_id: str) -> Candidate | None:

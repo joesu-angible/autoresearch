@@ -552,3 +552,96 @@ def test_autoreason_per_role_factory_called_with_each_role(history_in_tmp, fake_
 
     # Factory must be called once per role with the role name
     assert sorted(invocations) == ["author", "critic", "synthesizer"]
+
+
+# ---------------------------------------------------------------------------
+# T1 (issue #14): outcome_started state machine
+# ---------------------------------------------------------------------------
+
+def test_autoreason_writes_outcome_started_for_each_candidate(history_in_tmp, fake_repo, monkeypatch):
+    """Successful pass: each candidate has matching outcome_started + outcome,
+    paired by candidate_id."""
+    from research_loop.candidate import (
+        find_unfinished_candidates,
+        read_outcomes_started,
+    )
+    from research_loop.targets.student_v2 import StudentV2Target
+
+    a_metrics = {"combined": 0.86, "recall_1": 0.90, "mean_cosine": 0.81, "productness_neg_acc": 0.85, "productness_pos_acc": 0.99}
+    fake_outcomes = [{"status": "success", "metrics": a_metrics}] * 6  # 2 passes × 3 candidates
+    monkeypatch.setattr(StudentV2Target, "train", _patch_adapter_train(fake_outcomes))
+    monkeypatch.setattr(StudentV2Target, "log_row", _stub_log_row)
+    monkeypatch.setattr(StudentV2Target, "METRICS_JSON", fake_repo / "metrics_final_v2.json")
+
+    tournament.cmd_autoreason(
+        "student_v2",
+        max_passes=2, convergence=2,
+        max_seconds_per_candidate=None,
+        hypothesis_seed="t1", dry_run=False,
+        agent_client_factory=_mock_agent_client_factory(),
+    )
+
+    started = list(read_outcomes_started(history_in_tmp))
+    # Pass 1: A + B + AB = 3 candidates. Pass 2: A wins → converges, so also 3.
+    assert len(started) >= 3
+    # All started records carry a populated run_id
+    run_ids = {s.run_id for s in started}
+    assert len(run_ids) == 1
+    run_id = run_ids.pop()
+    assert run_id  # non-empty
+
+    # All started candidates have matching outcomes → no unfinished work
+    unfinished = find_unfinished_candidates(history_in_tmp, run_id=run_id)
+    assert unfinished == []
+
+
+def test_autoreason_crashed_candidate_appears_unfinished(history_in_tmp, fake_repo, monkeypatch):
+    """Simulate a mid-training crash: train() raises after first call.
+    Verify the crashed candidate has outcome_started but no outcome → unfinished."""
+    from research_loop.candidate import (
+        find_unfinished_candidates,
+        read_outcomes_started,
+    )
+    from research_loop.targets.student_v2 import StudentV2Target
+
+    call_count = {"n": 0}
+
+    def crashing_train(self, candidate, max_epochs=None, dry_run=False, log_path=None, max_seconds=None):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # First candidate (A baseline) succeeds
+            from research_loop.targets._base import TrainOutcome
+            return TrainOutcome(
+                candidate_id=candidate.id,
+                metrics={"combined": 0.86, "recall_1": 0.90, "mean_cosine": 0.81,
+                         "productness_neg_acc": 0.85, "productness_pos_acc": 0.99},
+                elapsed_seconds=1.0, status="success",
+                log_path=Path("/dev/null"),
+                metrics_json_path=self.METRICS_JSON,
+                return_code=0,
+            )
+        # Second candidate (B) crashes mid-training
+        raise RuntimeError("simulated mid-training OOM")
+
+    monkeypatch.setattr(StudentV2Target, "train", crashing_train)
+    monkeypatch.setattr(StudentV2Target, "log_row", _stub_log_row)
+    monkeypatch.setattr(StudentV2Target, "METRICS_JSON", fake_repo / "metrics_final_v2.json")
+
+    with pytest.raises(RuntimeError, match="OOM"):
+        tournament.cmd_autoreason(
+            "student_v2",
+            max_passes=1, convergence=2,
+            max_seconds_per_candidate=None,
+            hypothesis_seed="crash", dry_run=False,
+            agent_client_factory=_mock_agent_client_factory(),
+        )
+
+    started = list(read_outcomes_started(history_in_tmp))
+    # Both A (succeeded) and B (crashed) wrote outcome_started before train()
+    assert len(started) == 2
+
+    run_id = started[0].run_id
+    unfinished = find_unfinished_candidates(history_in_tmp, run_id=run_id)
+    # Exactly one candidate is unfinished — the one that crashed (B, kind="B")
+    assert len(unfinished) == 1
+    assert unfinished[0].kind == "B"

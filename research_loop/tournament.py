@@ -40,6 +40,7 @@ from research_loop.candidate import (
     CritiqueRecord,
     Decision,
     Outcome,
+    OutcomeStartedRecord,
     PatchProposalRecord,
     SynthesisRecord,
     append_history,
@@ -673,6 +674,14 @@ def cmd_autoreason(
             print(f"  running {cand.kind} ({cand.id})")
             adapter = TARGETS[target]()
             adapter.apply_patch(cand)  # validates V1-safety; no-op for A
+            # State-machine marker for resume (issue #14): written *after* the
+            # patch validates but *before* training starts. A crash after this
+            # point but before the matching Outcome below leaves the candidate
+            # detectable as unfinished via find_unfinished_candidates(run_id).
+            append_history(HISTORY_PATH, OutcomeStartedRecord(
+                candidate_id=cand.id, round_id=round_id, target=target,
+                pass_index=pass_index, kind=cand.kind, run_id=run_id,
+            ))
             if cand.kind == "A" or not cand.patch.strip():
                 # Empty patch = no working-tree change
                 outcome = adapter.train(cand, max_seconds=max_seconds_per_candidate, dry_run=dry_run)

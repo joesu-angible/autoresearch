@@ -179,6 +179,32 @@ class ProductnessLCNet(LCNet):
         return self.productness_head(summary).squeeze(-1)
 
 
+def _adapter_sha8(adapter_dir: Path) -> str:
+    """Stable 8-char identifier for a LoRA adapter, derived from its weights file.
+
+    Used to key the teacher embedding cache so that retraining the teacher
+    automatically yields a fresh cache subdir instead of silently reusing
+    embeddings from the old adapter. SHA-256 over the safetensors blob is
+    portable across machines and uses no metadata that could change between
+    saves of identical weights.
+    """
+    import hashlib
+    weights = adapter_dir / "adapter_model.safetensors"
+    if not weights.exists():
+        # Older adapters stored .bin instead — fall back so nothing breaks.
+        weights = adapter_dir / "adapter_model.bin"
+    if not weights.exists():
+        raise FileNotFoundError(
+            f"No adapter weights file in {adapter_dir} "
+            f"(checked adapter_model.safetensors and adapter_model.bin)"
+        )
+    h = hashlib.sha256()
+    with weights.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()[:8]
+
+
 def load_productness_val_paths(path: Path) -> set[str]:
     """Load the deterministic productness validation holdout list.
 
@@ -572,17 +598,36 @@ def load_checkpoint(path: Path, model, optimizer, scheduler, scaler, arc_margin,
 def main(max_epochs: int, patience: int, swa_epochs: int, resume: bool) -> None:
     set_seed(SEED)
 
-    # Redirect teacher cache_dir to local workspace if the upstream /data path
-    # is not writable (e.g. on dev hosts where /data/training/reid/workspace
-    # doesn't exist). Additive override; V1 trainers using /data still work.
-    _orig_cache = TEACHER_REGISTRY[TEACHER]["cache_dir"]
-    if not Path(_orig_cache).parent.parent.exists() or not (
-        Path(_orig_cache).parent.parent.stat().st_mode & 0o200
-    ):
-        new_cache = str(Path(TEACHER_CACHE_BASE) / TEACHER)
-        Path(new_cache).mkdir(parents=True, exist_ok=True)
-        TEACHER_REGISTRY[TEACHER]["cache_dir"] = new_cache
-        logger.info(f"Teacher cache redirected: {_orig_cache} -> {new_cache}")
+    # Pick a writable cache base. /data/.../workspace is preferred when it exists
+    # and is writable; otherwise fall back to the local repo workspace/.
+    _orig_cache_base = Path(TEACHER_REGISTRY[TEACHER]["cache_dir"]).parent
+    if _orig_cache_base.exists() and (_orig_cache_base.stat().st_mode & 0o200):
+        cache_base = str(_orig_cache_base)
+    else:
+        cache_base = TEACHER_CACHE_BASE
+
+    # Adapter-versioned cache subdirectory (project decision 2026-04-25):
+    # the teacher cache is keyed on a sha8 of the LoRA weights file, so a
+    # new teacher adapter automatically gets a fresh cache without manual
+    # `rm -rf`. Old caches stay around — useful for A/B comparison and as
+    # a rollback path. No manual bridge step required.
+    adapter_path = TEACHER_REGISTRY[TEACHER]["init_kwargs"].get("adapter_path")
+    if adapter_path is not None:
+        # Resolve relative to this file's directory (init_kwargs uses
+        # "../dino_finetune/output/best_adapter").
+        adapter_dir = (Path(__file__).resolve().parent / adapter_path).resolve()
+        sha8 = _adapter_sha8(adapter_dir)
+        versioned_cache = str(Path(cache_base) / TEACHER / sha8)
+    else:
+        versioned_cache = str(Path(cache_base) / TEACHER)
+        sha8 = "<no-adapter>"
+
+    Path(versioned_cache).mkdir(parents=True, exist_ok=True)
+    TEACHER_REGISTRY[TEACHER]["cache_dir"] = versioned_cache
+    logger.info(
+        f"Teacher cache: {versioned_cache} (adapter_sha={sha8}); "
+        f"new adapter → fresh cache automatically, no manual invalidation."
+    )
     device = torch.device(DEVICE if torch.cuda.is_available() else "cpu")
     out_dir = Path(OUTPUT_DIR)
     out_dir.mkdir(parents=True, exist_ok=True)

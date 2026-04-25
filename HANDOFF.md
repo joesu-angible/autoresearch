@@ -88,7 +88,9 @@ nohup ../.venv/bin/python -u train_v2.py --max-epochs 30 \
 echo "PID=$!"
 ```
 
-ETA ~7 h on a 4090. First epoch is slow (~14 min) because the DINOv3 teacher cache builds incrementally; subsequent epochs are faster (~5–8 min) once the cache is warm in `workspace/output/teacher_cache/dinov3_ft/`.
+ETA ~7 h on a 4090. First epoch is slow (~14 min) because the DINOv3 teacher cache builds incrementally; subsequent epochs are faster (~5–8 min) once the cache is warm in `workspace/output/teacher_cache/dinov3_ft/<adapter_sha>/`.
+
+> **No manual cache invalidation needed.** The teacher cache directory is keyed on the LoRA adapter's SHA-256 prefix (`<adapter_sha>` above). Retraining the teacher → different adapter weights → different sha → fresh cache subdir → automatic rebuild on first student epoch. Old caches are preserved (useful for A/B comparison or rollback). To save disk, you can manually delete stale `<sha>/` subdirs, but training will not break if you forget.
 
 Watch progress:
 
@@ -186,7 +188,7 @@ git commit -m "docs: handoff note for feat/autoreason-cls-umbrella"
 1. **`combined_metric` is retrieval-only by design** — do not blend productness into it. See [project memory: Metric strategy](.claude/projects/.../memory/project_metric_strategy.md). The promotion logic adds productness as a *separate* AND-clause veto.
 2. **`USE_PRODUCTNESS_CLS = True` is the default** — productness is mandatory for V2+ deployment. Flag-off path exists only as a V1-parity proof.
 3. **V1 files are tournament-time read-only, dev-time editable** — only additive edits that preserve V1 default behavior. The `V1_FORBIDDEN_PATHS` list in `research_loop/targets/_base.py` enforces this at tournament runtime.
-4. **Teacher cache lives at `workspace/output/teacher_cache/dinov3_ft/`** (local fallback when `/data/training/reid/workspace` isn't writable). Don't delete it — it's the bottleneck on first epoch.
+4. **Teacher cache lives at `workspace/output/teacher_cache/dinov3_ft/<adapter_sha>/`** (local fallback when `/data/training/reid/workspace` isn't writable). Adapter-versioned: a new teacher adapter automatically writes to a new `<sha>/` subdir on first student epoch — no manual `rm -rf` needed when teacher is retrained. Old subdirs can be deleted to reclaim disk but training won't break if you leave them.
 5. **`productness_val_paths.txt` is gitignored**. The build script in `student_finetune/tools/build_productness_val.py` uses SHA-1 bucketing on relative paths so the holdout is deterministic and portable across machines.
 6. **Pre-existing V1 test failures (19 of them) predate this branch** — verified with `git stash`. Don't try to fix them as part of this work.
 

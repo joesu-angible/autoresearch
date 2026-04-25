@@ -178,6 +178,18 @@ class ProductnessWrapper(Dataset):
 - Use `--no-verify` to bypass tests.
 - Have the tournament outer loop auto-patch `prepare.py` or any V1 file.
 
+## Adapter-versioned teacher cache (project decision 2026-04-25)
+
+The teacher embedding cache directory is keyed on a SHA-256 prefix of the LoRA adapter's safetensors blob:
+
+```
+workspace/output/teacher_cache/dinov3_ft/<adapter_sha8>/<md5(image_path)>.npy
+```
+
+When the teacher is retrained (or rolled back) the student trainer detects the new adapter sha automatically and writes to a fresh subdir; old subdirs stay around for A/B comparison and rollback. **No manual bridge step** between teacher retraining and student training — the previous workflow ("rename adapter, rm old cache") was a footgun (silent staleness if forgotten) and is eliminated.
+
+Implementation: `_adapter_sha8()` helper in `student_finetune/train_v2.py` computes the sha at startup and overrides `TEACHER_REGISTRY[TEACHER]["cache_dir"]` to include the sha subdir.
+
 ## Two-sided productness (project decision 2026-04-25)
 
 Productness is added on **both** the teacher (DINOv3 + LoRA) and the student (LCNet). Project rationale: shaping the teacher's 1280-d embedding space to be product-aware before distillation gives the student a head-start on the same signal — productness is mandatory across the stack, not just at the deployment layer.

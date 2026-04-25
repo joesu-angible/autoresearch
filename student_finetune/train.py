@@ -383,6 +383,18 @@ class LCNet(nn.Module):
         emb = self.proj(summary)
         return functional.normalize(emb, p=2, dim=1)
 
+    def forward_embeddings_train_with_summary(
+        self, images: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """V2-only helper: returns (L2-normalized embedding [B,256], summary [B,1280]).
+
+        Lets V2 productness head reuse the summary feature without a second forward.
+        V1 callers are unaffected — they call forward_embeddings_train.
+        """
+        _spatial, summary = self.forward_features(images)
+        emb = self.proj(summary)
+        return functional.normalize(emb, p=2, dim=1), summary
+
     def encode(self, images: torch.Tensor) -> torch.Tensor:
         """Encode images to L2-normalized embeddings [B, 256]. No gradients."""
         was_training = self.training
@@ -1052,6 +1064,12 @@ class EpochStats:
     ssl_loss: float
     spatial_loss: float
     mean_cosine: float
+    # V2 productness branch (default 0.0 keeps V1 logs unchanged)
+    productness_loss: float = 0.0
+    productness_acc: float = 0.0
+    productness_pos_acc: float = 0.0
+    productness_neg_acc: float = 0.0
+    productness_n: int = 0
 
 
 def run_train_epoch(
@@ -1096,6 +1114,19 @@ def run_train_epoch(
     featsharp: "FeatSharpModule | None" = None,
     teacher_mean_dir: torch.Tensor | None = None,
     teacher_angular_dispersion: float = 0.0,
+    # --- V2 productness branch (off by default — V1 unchanged) ---
+    productness_head: "nn.Module | None" = None,
+    productness_negative_paths: set[str] | None = None,
+    productness_weight: float = 0.0,
+    # Asymmetric label smoothing on the productness BCE targets:
+    #   y=1 (positive)  →  1.0 - smoothing_pos
+    #   y=0 (negative)  →        smoothing_neg
+    # Defaults of 0.0 / 0.0 give standard hard-label BCE (V1-compat).
+    productness_label_smoothing_pos: float = 0.0,
+    productness_label_smoothing_neg: float = 0.0,
+    # Focal-loss exponent γ; 0.0 = plain BCE, 2.0 = down-weight easy examples
+    # by (1 - p_t)^γ. Targets noisy / overrepresented positives.
+    productness_focal_gamma: float = 0.0,
 ) -> EpochStats:
     """Run one training epoch with separate distillation and ArcFace data."""
     model.train()
@@ -1115,6 +1146,19 @@ def run_train_epoch(
     total_spatial = 0.0
     total_align = 0.0
     _bl_idx = blacklist_class_indices or set()
+    # V2 productness running totals
+    total_productness_loss = 0.0
+    productness_correct = 0
+    productness_pos_correct = 0
+    productness_pos_total = 0
+    productness_neg_correct = 0
+    productness_neg_total = 0
+    _productness_active = (
+        productness_head is not None
+        and productness_weight > 0
+        and productness_negative_paths is not None
+    )
+    _productness_neg_paths: set[str] = productness_negative_paths or set()
     n = 0
     first_batch_saved = False
 
@@ -1135,7 +1179,11 @@ def run_train_epoch(
         optimizer.zero_grad(set_to_none=True)
 
         with torch.autocast(device_type=device.type, enabled=amp):
-            student_emb = model.forward_embeddings_train(images)
+            if _productness_active:
+                student_emb, _summary_for_productness = model.forward_embeddings_train_with_summary(images)
+            else:
+                student_emb = model.forward_embeddings_train(images)
+                _summary_for_productness = None
 
             # --- Distillation Loss (multi-teacher weighted, per D-07) ---
             total_distill_loss = torch.tensor(0.0, device=device)
@@ -1351,6 +1399,60 @@ def run_train_epoch(
 
             loss = distill_loss + arc_loss_weight * arc_loss + sep_weight * l_sep + ssl_weight * ssl_loss_val + spatial_distill_weight * spatial_loss_val
 
+            # --- V2 productness BCE (default-off; gate by _productness_active) ---
+            # Supports asymmetric label smoothing + focal weighting; both
+            # default to disabled so plain BCE behavior is preserved when
+            # the new kwargs are omitted.
+            productness_loss_val = torch.tensor(0.0, device=device)
+            if _productness_active:
+                # Hard 0/1 labels — used for accuracy stats and the focal weight.
+                y_hard = torch.tensor(
+                    [0.0 if p in _productness_neg_paths else 1.0 for p in paths],
+                    device=device,
+                    dtype=_summary_for_productness.dtype,
+                )
+                productness_logits = productness_head(_summary_for_productness).squeeze(-1)
+
+                # Asymmetric label smoothing for the BCE target:
+                #   y=1 → 1.0 - smoothing_pos
+                #   y=0 →       smoothing_neg
+                eps_pos = productness_label_smoothing_pos
+                eps_neg = productness_label_smoothing_neg
+                if eps_pos > 0.0 or eps_neg > 0.0:
+                    y_target = y_hard * (1.0 - eps_pos) + (1.0 - y_hard) * eps_neg
+                else:
+                    y_target = y_hard
+
+                per_sample_bce = functional.binary_cross_entropy_with_logits(
+                    productness_logits, y_target, reduction="none"
+                )
+
+                # Focal weight (Lin et al. 2017): (1 - p_t)^γ, where p_t is the
+                # model's confidence in the *hard* class. Down-weights easy examples.
+                if productness_focal_gamma > 0.0:
+                    with torch.no_grad():
+                        p = torch.sigmoid(productness_logits)
+                        p_t = y_hard * p + (1.0 - y_hard) * (1.0 - p)
+                        focal_w = (1.0 - p_t).pow(productness_focal_gamma)
+                    productness_loss_val = (per_sample_bce * focal_w).mean()
+                else:
+                    productness_loss_val = per_sample_bce.mean()
+
+                loss = loss + productness_weight * productness_loss_val
+
+                with torch.no_grad():
+                    pred = (productness_logits > 0).float()
+                    pos_mask = y_hard > 0.5
+                    neg_mask = ~pos_mask
+                    productness_correct += int((pred == y_hard).sum().item())
+                    productness_pos_total += int(pos_mask.sum().item())
+                    productness_neg_total += int(neg_mask.sum().item())
+                    if pos_mask.any():
+                        productness_pos_correct += int((pred[pos_mask] == 1.0).sum().item())
+                    if neg_mask.any():
+                        productness_neg_correct += int((pred[neg_mask] == 0.0).sum().item())
+                total_productness_loss += float(productness_loss_val.item())
+
         # --- VAT Loss (fp32, outside autocast to avoid precision issues) ---
         # Skip VAT while backbone is frozen -- perturbations have no effect.
         l_vat = torch.tensor(0.0, device=device)
@@ -1388,6 +1490,7 @@ def run_train_epoch(
             print(f"\r  {n}/{total_steps} [{bar}] - loss: {avg_loss:.4f} - cos: {avg_cos:.4f}{ssl_str}{spatial_str}", end="", flush=True)
     print()  # newline after epoch
 
+    _prod_n = productness_pos_total + productness_neg_total
     return EpochStats(
         loss=total_loss / max(n, 1),
         distill_loss=total_distill / max(n, 1),
@@ -1397,6 +1500,11 @@ def run_train_epoch(
         ssl_loss=total_ssl / max(n, 1),
         spatial_loss=total_spatial / max(n, 1),
         mean_cosine=total_align / max(n, 1),
+        productness_loss=(total_productness_loss / max(n, 1)) if _productness_active else 0.0,
+        productness_acc=(productness_correct / _prod_n) if _prod_n > 0 else 0.0,
+        productness_pos_acc=(productness_pos_correct / productness_pos_total) if productness_pos_total > 0 else 0.0,
+        productness_neg_acc=(productness_neg_correct / productness_neg_total) if productness_neg_total > 0 else 0.0,
+        productness_n=_prod_n,
     )
 
 

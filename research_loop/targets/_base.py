@@ -80,20 +80,28 @@ class TargetAdapter:
             return
         assert_no_v1_writes(candidate.changed_files)
 
+    @property
+    def METRICS_PROGRESS_JSON(self) -> Path:
+        """Sibling of METRICS_JSON; trainers write this after every eval cycle."""
+        return self.METRICS_JSON.parent / "metrics_progress_v2.json"
+
+    SIGTERM_GRACE_SECONDS: float = 30.0
+
     def train(
         self,
         candidate: Candidate,
         max_epochs: int | None = None,
         dry_run: bool = False,
         log_path: Path | None = None,
+        max_seconds: float | None = None,
     ) -> TrainOutcome:
         """Run the training subprocess and return a TrainOutcome.
 
-        For kind='A' (do-nothing baseline) on the *first* round, this still
-        executes a real training run because the baseline metrics need to
-        come from somewhere. For subsequent rounds where A is just "the
-        incumbent we already evaluated", callers should skip executing A
-        and reuse its prior outcome.
+        Time budget: when `max_seconds` is set, the subprocess is killed
+        cleanly (SIGTERM, 30s grace, then SIGKILL) on overrun. Whatever
+        progress was written to `metrics_progress_v2.json` up to that point
+        is parsed; status becomes "timeout". promote.decide() rejects timeout
+        candidates regardless of partial-metric values.
         """
         epochs = max_epochs if max_epochs is not None else self.DEFAULT_EPOCHS
         cmd = list(self.TRAIN_CMD) + ["--max-epochs", str(epochs)]
@@ -113,20 +121,39 @@ class TargetAdapter:
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
         t0 = time.time()
+        timed_out = False
         with log_path.open("w") as logf:
-            proc = subprocess.run(
-                cmd,
-                cwd=self.REPO_DIR,
-                stdout=logf,
-                stderr=subprocess.STDOUT,
-                check=False,
+            proc = subprocess.Popen(
+                cmd, cwd=self.REPO_DIR,
+                stdout=logf, stderr=subprocess.STDOUT,
             )
+            try:
+                proc.wait(timeout=max_seconds)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                proc.terminate()
+                try:
+                    proc.wait(timeout=self.SIGTERM_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=10.0)
+                    except subprocess.TimeoutExpired:
+                        pass
         elapsed = time.time() - t0
 
         from research_loop.evaluators import parse_metrics  # local import: avoid cycle
         metrics: dict[str, float] = {}
         status = "failed"
-        if proc.returncode == 0 and self.METRICS_JSON.exists():
+        if timed_out:
+            status = "timeout"
+            # Recover whatever the trainer wrote up to its last eval (may be empty)
+            if self.METRICS_PROGRESS_JSON.exists():
+                try:
+                    metrics = parse_metrics(self.METRICS_PROGRESS_JSON)
+                except Exception:
+                    metrics = {}
+        elif proc.returncode == 0 and self.METRICS_JSON.exists():
             try:
                 metrics = parse_metrics(self.METRICS_JSON)
                 status = "success"

@@ -207,6 +207,7 @@ def _outcome_to_candidate_result(outcome: Outcome, candidate: Candidate) -> Cand
         has_rollback=bool(candidate.rollback.strip())
             and candidate.rollback.strip().lower() != "n/a"
             or candidate.kind == "A",
+        status=outcome.status,
     )
 
 
@@ -215,11 +216,12 @@ def cmd_promote(round_id: str) -> int:
     if not candidates:
         print(f"No candidates for round {round_id}", file=sys.stderr)
         return 2
-    outcomes = [o for o in read_outcomes(HISTORY_PATH, round_id=round_id)
-                if o.status == "success"]
+    outcomes = list(read_outcomes(HISTORY_PATH, round_id=round_id))
     if not outcomes:
-        print(f"No successful outcomes for round {round_id}", file=sys.stderr)
+        print(f"No outcomes recorded for round {round_id}", file=sys.stderr)
         return 1
+    # Pass all outcomes (including timeouts) to decide() so the rejection
+    # reasons are visible in the Decision.reason field, not silently filtered.
 
     results = [
         _outcome_to_candidate_result(o, candidates[o.candidate_id])

@@ -52,6 +52,10 @@ class CandidateResult:
     # when both A and the challenger expose the field.
     productness_pos_acc: float | None = None
     productness_neg_acc: float | None = None
+    # Status from TrainOutcome. "timeout" candidates cannot be promoted —
+    # we don't trust partial metrics for production-track decisions even
+    # if they happen to look good.
+    status: str = "success"
 
 
 @dataclass(frozen=True)
@@ -96,6 +100,8 @@ def decide(results: list[CandidateResult]) -> Decision:
     best_reason = "no challengers; incumbent A wins by default"
 
     for c in challengers:
+        if c.status != "success":
+            continue  # vetoed: timeout / failed candidates cannot be promoted
         if not c.has_rollback:
             continue  # vetoed: non-A without rollback
         delta = c.combined - a.combined

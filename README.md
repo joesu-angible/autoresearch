@@ -51,6 +51,99 @@ cd student_finetune
 python -m pytest tests/ -x -q
 ```
 
+---
+
+## 🤖 Autoreason: training that improves itself overnight
+
+This repo ships a **fully autonomous research loop** modeled on the [NousResearch autoreason paper](https://github.com/NousResearch/autoreason). Three fresh LLM agents — **Critic**, **Author B**, **Synthesizer** — generate code patches, run them under a time budget, and let objective ML metrics pick the winner. Loops until the incumbent wins `k=2` consecutive rounds. **Zero human intervention between passes.**
+
+```
+Each pass:
+  Critic LLM  ─── reads train_v2.py + last 30 results_v2.tsv rows + last 10 outcomes
+              └─→ structured Critique (problems only, no fixes)
+
+  Author B LLM ── reads critique + trainer source
+              └─→ unified-diff patch (the new candidate B)
+
+  Synthesizer LLM ── reads A + B's patch (anonymized X / Y, no metrics)
+              └─→ conservative AB synthesis patch
+
+  For each kind ∈ {A, B, AB}:
+      git apply (V1-safety + auto-revert)
+        → adapter.train(max_seconds=N) → metrics
+        → promote.decide() with productness-aware guardrails
+        → Outcome record persisted to history.jsonl
+
+  Decision recorded. If A won → consecutive_count++. Convergence at k=2.
+```
+
+### Quickstart — pre-flight smoke (~30s, ~3 LLM calls)
+
+Verify the LLM round-trip works before launching a multi-hour training run:
+
+```bash
+# Default: hermes (matches the repo's existing autoresearch convention)
+.venv/bin/python -m research_loop.tools.autoreason_smoke
+
+# Or pick a specific CLI
+.venv/bin/python -m research_loop.tools.autoreason_smoke --llm-cli claude --llm-model claude-sonnet-4-6
+.venv/bin/python -m research_loop.tools.autoreason_smoke --llm-cli codex
+```
+
+### Recommended config — mixed-model setup
+
+Different roles benefit from different model classes (paper §7.3). Suggested baseline that respects token budgets:
+
+| Role | CLI | Why |
+|---|---|---|
+| **Critic** (analytical, low temp) | `hermes --provider openai-codex` | User-habit-tuned codex catches problems specific to your project |
+| **Author B** (creative volume, temp 0.8) | `codex` direct | Unlimited; built for code patches; raw diversity > habit constraints |
+| **Synthesizer** (conservative pick) | `hermes --provider openai-codex` | User-taste-tuned for "halve and keep the safer part" |
+
+```bash
+.venv/bin/python -m research_loop.tournament autoreason \
+    --target student_v2 \
+    --max-passes 15 --convergence 2 \
+    --max-seconds-per-candidate 9000 \
+    --critic-cli hermes --critic-model openai-codex/gpt-5-codex \
+    --author-cli codex --author-model gpt-5-codex \
+    --synthesizer-cli hermes --synthesizer-model openai-codex/gpt-5-codex
+```
+
+Or use Opus for everything if tokens aren't the bottleneck:
+
+```bash
+.venv/bin/python -m research_loop.tournament autoreason \
+    --target student_v2 \
+    --max-passes 15 --convergence 2 --max-seconds-per-candidate 9000 \
+    --llm-cli claude --llm-model claude-opus-4-7
+```
+
+### Escalation — break a stalled run
+
+If A keeps winning but `combined` plateaus, inject one Opus critic pass to surface a deeper analytical view:
+
+```bash
+.venv/bin/python -m research_loop.tournament autoreason \
+    --target student_v2 --max-passes 1 --convergence 99 \
+    --max-seconds-per-candidate 9000 \
+    --critic-cli claude --critic-model claude-opus-4-7 \
+    --author-cli codex --author-model gpt-5-codex \
+    --synthesizer-cli hermes --synthesizer-model openai-codex/gpt-5-codex
+```
+
+`--max-passes 1 --convergence 99` = "one pass, don't try to converge, just inject Opus's view". Then resume the cheap config.
+
+### Supported CLIs
+
+`hermes` (default), `claude`, `codex`. Selection precedence: explicit `--llm-cli` flag → `AUTORESEARCH_LLM_CLI` env var → `hermes`. Hermes routes through 21 providers (`auto`, `openrouter`, `nous`, `anthropic`, `gemini`, `xai`, `ollama-cloud`, `huggingface`, `kimi-coding`, `stepfun`, `minimax`, `arcee`, `nvidia`, …) — pick via `--llm-provider <name>`.
+
+### Audit trail
+
+Every LLM call's raw text is persisted to `research_loop/history.jsonl` as `record_type ∈ {critique, patch_proposal, synthesis, candidate, outcome, decision}`. A 5-pass run writes 50+ replayable records.
+
+See [HANDOFF.md](HANDOFF.md) for the full operator runbook (modes 2a / 2b / 2c, cache invariants, smoke procedure, troubleshooting).
+
 ## Adding New Research Topics
 
 Create a new subfolder following the existing pattern:

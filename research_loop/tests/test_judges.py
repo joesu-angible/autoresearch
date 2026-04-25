@@ -83,3 +83,37 @@ def test_aggregate_in_unit_interval():
     for c in (_a(), _b()):
         s = aggregate(c)
         assert 0.0 <= s <= 1.0
+
+
+# T3 — N>2 ranking (issue #9 Goal 3): sweep round with many B variants
+def test_rank_orders_n_variants_with_a_tiebreak():
+    """Sweep mode: 1 A + 5 strong B variants. All score full marks → A first
+    by tie-break, all five Bs after."""
+    a = _a()
+    bs = [
+        _b(hypothesis=f"variant {i} with quantifiable target",
+           expected_metric=f"combined +0.00{i+1}")
+        for i in range(5)
+    ]
+    ordering = rank([*bs, a])
+    assert len(ordering) == 6
+    assert ordering[0].kind == "A"  # tie → A first
+    assert all(o.kind == "B" for o in ordering[1:])
+    # Strict descending by score (with A first on tie)
+    scores = [o.score for o in ordering]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_rank_n_variants_with_varying_quality():
+    """Mix of strong and weak Bs in N>2 sweep — weakest end up last."""
+    a = _a()
+    strong = _b(hypothesis="strong B with full-marks rationale")
+    medium = _b(hypothesis="medium B", evidence_refs=[])  # no prior evidence
+    weak = _b(hypothesis="weak", expected_metric="better", risks=[], evidence_refs=[])
+    ordering = rank([weak, a, medium, strong])
+    assert len(ordering) == 4
+    assert ordering[0].kind == "A"
+    # strong B should rank above medium and weak among the Bs
+    b_ordering = [o for o in ordering if o.kind == "B"]
+    assert b_ordering[0].candidate_id == strong.id
+    assert b_ordering[-1].candidate_id == weak.id

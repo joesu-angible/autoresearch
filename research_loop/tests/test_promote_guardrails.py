@@ -241,3 +241,70 @@ def test_is_deployable_collects_all_failures():
     verdict = is_deployable(r)
     assert verdict.deployable is False
     assert len(verdict.reasons) == 3
+
+
+# ---------------------------------------------------------------------------
+# T3 — N>2 (sweep mode, issue #9 Goal 3): decide() over 1 A + many Bs
+# ---------------------------------------------------------------------------
+
+def test_decide_n_variants_picks_highest_combined():
+    """Sweep with 5 B challengers: best-combined wins, others ignored."""
+    a = _a(combined=0.860, recall_1=0.900)
+    bs = [
+        _b(combined=0.865, recall_1=0.905, cid="b0"),
+        _b(combined=0.872, recall_1=0.906, cid="b1"),
+        _b(combined=0.880, recall_1=0.910, cid="b2"),  # winner
+        _b(combined=0.870, recall_1=0.905, cid="b3"),
+        _b(combined=0.866, recall_1=0.905, cid="b4"),
+    ]
+    decision = decide([a, *bs])
+    assert decision.winner_id == "b2"
+    assert decision.promote is True
+
+
+def test_decide_n_variants_all_regress_a_wins():
+    """All N challengers worse than A → A wins by default."""
+    a = _a(combined=0.880, recall_1=0.910)
+    bs = [_b(combined=0.860 + 0.001 * i, recall_1=0.900, cid=f"b{i}") for i in range(5)]
+    decision = decide([a, *bs])
+    assert decision.winner_kind == "A"
+    assert decision.promote is False
+
+
+def test_decide_n_variants_skips_guardrail_violator_picks_runner_up():
+    """Highest-combined B regresses recall@1 → next-highest wins."""
+    a = _a(combined=0.860, recall_1=0.910)
+    bs = [
+        _b(combined=0.866, recall_1=0.908, cid="ok-low"),
+        _b(combined=0.872, recall_1=0.908, cid="ok-mid"),
+        _b(combined=0.880, recall_1=0.880, cid="vetoed"),  # +combined but recall regression > 0.005
+        _b(combined=0.875, recall_1=0.909, cid="ok-runner-up"),  # should win
+    ]
+    decision = decide([a, *bs])
+    assert decision.winner_id == "ok-runner-up"
+
+
+def test_decide_n_variants_within_noise_band_skipped():
+    """Variants within noise of A but with higher recall don't auto-promote."""
+    a = _a(combined=0.870, recall_1=0.900)
+    # All 4 strictly inside the noise band (NOISE_BAND/2 avoids float-precision
+    # at the boundary — see existing test at line 69).
+    bs = [
+        _b(combined=0.870 + NOISE_BAND / 2, recall_1=0.910, cid=f"b{i}")
+        for i in range(4)
+    ]
+    decision = decide([a, *bs])
+    assert decision.winner_kind == "A"
+
+
+def test_decide_n_variants_failed_status_excluded():
+    """Variants with status != 'success' are excluded; runner-up succeeds."""
+    a = _a(combined=0.860, recall_1=0.900)
+    high_but_failed = CandidateResult(
+        candidate_id="failed-best", kind="B",
+        combined=0.890, recall_1=0.915, mean_cosine=0.83,
+        status="timeout",
+    )
+    succeeding = _b(combined=0.875, recall_1=0.910, cid="ok-winner")
+    decision = decide([a, high_but_failed, succeeding])
+    assert decision.winner_id == "ok-winner"

@@ -140,6 +140,58 @@ def test_productness_integration_one_step(tmp_path: Path, monkeypatch):
     assert delta > 0.0, "productness_head weights did not change — gradient not flowing"
 
 
+def test_productness_smoothing_and_focal_path(tmp_path: Path, monkeypatch):
+    """Same one-step smoke but with label smoothing + focal γ active.
+
+    Confirms the new kwargs flow through run_train_epoch end-to-end without
+    blowing up — finite loss, positive accuracy, gradients move.
+    """
+    device = torch.device("cpu")
+    ds = TinyDistillDataset(tmp_path, IMAGE_SIZE)
+    loader = DataLoader(ds, batch_size=4, shuffle=False, collate_fn=_collate)
+    negative_paths = {p for p, _ in ds.samples if "negative" in p}
+
+    model = ProductnessLCNet(
+        scale=LCNET_SCALE, se_start_block=SE_START_BLOCK,
+        se_reduction=SE_REDUCTION, activation=ACTIVATION,
+        kernel_sizes=KERNEL_SIZES, embedding_dim=EMBEDDING_DIM,
+        device="cpu", teacher_dims={TEACHER: TEACHER_DIM},
+        productness_hidden=64,
+    ).to(device)
+    model.unfreeze_last_stage()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
+    scaler = torch.amp.GradScaler("cpu", enabled=False)
+
+    import train as train_mod
+    monkeypatch.setattr(
+        train_mod, "load_teacher_embeddings",
+        lambda paths, *a, **k: torch.randn(len(paths), TEACHER_DIM, device=device),
+    )
+
+    head_w_before = next(model.productness_head.parameters()).detach().clone()
+
+    stats = run_train_epoch(
+        model=model, distill_loader=loader, arcface_loader=None,
+        optimizer=optimizer, scheduler=scheduler, scaler=scaler,
+        teachers={TEACHER: StubTeacher()}, teacher_weights={TEACHER: 1.0},
+        device=device, amp=False,
+        arc_margin=None, arc_loss_weight=0.0,
+        productness_head=model.productness_head,
+        productness_negative_paths=negative_paths,
+        productness_weight=0.05,
+        productness_label_smoothing_pos=0.05,
+        productness_label_smoothing_neg=0.02,
+        productness_focal_gamma=2.0,
+    )
+
+    assert np.isfinite(stats.productness_loss)
+    assert stats.productness_loss > 0.0
+    assert stats.productness_n == 4
+    head_w_after = next(model.productness_head.parameters()).detach().clone()
+    assert (head_w_after - head_w_before).abs().max().item() > 0.0
+
+
 def test_v1_default_path_unchanged(tmp_path: Path, monkeypatch):
     """Sanity: when productness kwargs are absent, run_train_epoch behaves as V1."""
     device = torch.device("cpu")

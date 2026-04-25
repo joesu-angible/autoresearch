@@ -125,6 +125,17 @@ PRODUCTNESS_HEAD_HIDDEN = 256
 PRODUCTNESS_VAL_HOLDOUT_PATH = (
     Path(__file__).resolve().parent / "productness_val_paths.txt"
 )
+# Loss-engineering knobs to address noisy `REID_NEGATIVES` labels (issue #5
+# top risk). Both default-on per ML-engineer review 2026-04-25:
+#   - asymmetric label smoothing: more on positives because clear products
+#     are abundant; less on negatives because the noise pattern is "near-product
+#     objects mislabeled as personal items" (false negatives, not false positives).
+#   - focal γ=2 down-weights easy positives so the head focuses on the
+#     ambiguous near-product negatives where neg_acc is currently weak.
+# Set both to 0.0 to recover plain BCE.
+PRODUCTNESS_LABEL_SMOOTHING_POS = 0.05
+PRODUCTNESS_LABEL_SMOOTHING_NEG = 0.02
+PRODUCTNESS_FOCAL_GAMMA = 2.0
 
 # V2 output (isolated from v1) — falls back to local workspace if /data is unavailable
 _DATA_WORKSPACE = Path("/data/training/reid/workspace/output")
@@ -749,6 +760,9 @@ def main(max_epochs: int, patience: int, swa_epochs: int, resume: bool) -> None:
             productness_head=(model.productness_head if USE_PRODUCTNESS_CLS else None),
             productness_negative_paths=(productness_negative_paths if USE_PRODUCTNESS_CLS else None),
             productness_weight=(PRODUCTNESS_CLS_WEIGHT if USE_PRODUCTNESS_CLS else 0.0),
+            productness_label_smoothing_pos=(PRODUCTNESS_LABEL_SMOOTHING_POS if USE_PRODUCTNESS_CLS else 0.0),
+            productness_label_smoothing_neg=(PRODUCTNESS_LABEL_SMOOTHING_NEG if USE_PRODUCTNESS_CLS else 0.0),
+            productness_focal_gamma=(PRODUCTNESS_FOCAL_GAMMA if USE_PRODUCTNESS_CLS else 0.0),
         )
         epoch_time = time.time() - t0
 

@@ -1118,6 +1118,15 @@ def run_train_epoch(
     productness_head: "nn.Module | None" = None,
     productness_negative_paths: set[str] | None = None,
     productness_weight: float = 0.0,
+    # Asymmetric label smoothing on the productness BCE targets:
+    #   y=1 (positive)  →  1.0 - smoothing_pos
+    #   y=0 (negative)  →        smoothing_neg
+    # Defaults of 0.0 / 0.0 give standard hard-label BCE (V1-compat).
+    productness_label_smoothing_pos: float = 0.0,
+    productness_label_smoothing_neg: float = 0.0,
+    # Focal-loss exponent γ; 0.0 = plain BCE, 2.0 = down-weight easy examples
+    # by (1 - p_t)^γ. Targets noisy / overrepresented positives.
+    productness_focal_gamma: float = 0.0,
 ) -> EpochStats:
     """Run one training epoch with separate distillation and ArcFace data."""
     model.train()
@@ -1391,23 +1400,51 @@ def run_train_epoch(
             loss = distill_loss + arc_loss_weight * arc_loss + sep_weight * l_sep + ssl_weight * ssl_loss_val + spatial_distill_weight * spatial_loss_val
 
             # --- V2 productness BCE (default-off; gate by _productness_active) ---
+            # Supports asymmetric label smoothing + focal weighting; both
+            # default to disabled so plain BCE behavior is preserved when
+            # the new kwargs are omitted.
             productness_loss_val = torch.tensor(0.0, device=device)
             if _productness_active:
-                productness_targets = torch.tensor(
+                # Hard 0/1 labels — used for accuracy stats and the focal weight.
+                y_hard = torch.tensor(
                     [0.0 if p in _productness_neg_paths else 1.0 for p in paths],
                     device=device,
                     dtype=_summary_for_productness.dtype,
                 )
                 productness_logits = productness_head(_summary_for_productness).squeeze(-1)
-                productness_loss_val = functional.binary_cross_entropy_with_logits(
-                    productness_logits, productness_targets
+
+                # Asymmetric label smoothing for the BCE target:
+                #   y=1 → 1.0 - smoothing_pos
+                #   y=0 →       smoothing_neg
+                eps_pos = productness_label_smoothing_pos
+                eps_neg = productness_label_smoothing_neg
+                if eps_pos > 0.0 or eps_neg > 0.0:
+                    y_target = y_hard * (1.0 - eps_pos) + (1.0 - y_hard) * eps_neg
+                else:
+                    y_target = y_hard
+
+                per_sample_bce = functional.binary_cross_entropy_with_logits(
+                    productness_logits, y_target, reduction="none"
                 )
+
+                # Focal weight (Lin et al. 2017): (1 - p_t)^γ, where p_t is the
+                # model's confidence in the *hard* class. Down-weights easy examples.
+                if productness_focal_gamma > 0.0:
+                    with torch.no_grad():
+                        p = torch.sigmoid(productness_logits)
+                        p_t = y_hard * p + (1.0 - y_hard) * (1.0 - p)
+                        focal_w = (1.0 - p_t).pow(productness_focal_gamma)
+                    productness_loss_val = (per_sample_bce * focal_w).mean()
+                else:
+                    productness_loss_val = per_sample_bce.mean()
+
                 loss = loss + productness_weight * productness_loss_val
+
                 with torch.no_grad():
                     pred = (productness_logits > 0).float()
-                    pos_mask = productness_targets > 0.5
+                    pos_mask = y_hard > 0.5
                     neg_mask = ~pos_mask
-                    productness_correct += int((pred == productness_targets).sum().item())
+                    productness_correct += int((pred == y_hard).sum().item())
                     productness_pos_total += int(pos_mask.sum().item())
                     productness_neg_total += int(neg_mask.sum().item())
                     if pos_mask.any():

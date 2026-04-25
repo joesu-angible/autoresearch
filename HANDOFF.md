@@ -79,49 +79,78 @@ The file `student_finetune/productness_val_paths.txt` is gitignored. Regenerate 
 # expect: ~45k holdout paths from 450k total (10%)
 ```
 
-### 2. Train V2 via the research_loop tournament (issue #4 main flow)
+### 2. Train V2 via fully-autonomous `tournament autoreason` (recommended)
 
-The training driver is the autoreason tournament — every run is structured as a tournament round (A=incumbent, B/AB=experiments). The first production run is the seed: a "baseline-only" round with kind=A, no patch — establishes the row in `results_v2.tsv` that all future rounds challenge.
+The driver is the **autoreason loop** — Critic + Author B + Synthesizer LLM agents propose patches each pass, the adapter trains them under a per-candidate time budget, `promote.decide()` picks a winner via objective metrics, and the loop terminates when the incumbent wins `k` consecutive rounds. Zero human intervention between passes.
 
 ```bash
-# Stage 1 — DINOv3 teacher production baseline (~50h on 4090)
-nohup ../.venv/bin/python -u -m research_loop.tournament run-round \
-    --target dino_v2 \
-    --hypothesis "v2 teacher production baseline (productness ON, smoothing+focal)" \
-    --baseline-only \
-    > dino_finetune/run_v2_production.log 2>&1 &
+# Pre-flight: validate end-to-end with mocked subprocess (no GPU)
+.venv/bin/python -m research_loop.tournament autoreason \
+    --target student_v2 --max-passes 1 --dry-run
 
-# Stage 2 — LCNet student production baseline (~6-7h)
-nohup ../.venv/bin/python -u -m research_loop.tournament run-round \
+# Real run on student_v2 (productness ON; ~6-7h × per-candidate budget)
+nohup .venv/bin/python -u -m research_loop.tournament autoreason \
     --target student_v2 \
-    --hypothesis "v2 student production baseline (productness ON, smoothing+focal)" \
-    --baseline-only \
+    --max-passes 15 \
+    --convergence 2 \
+    --max-seconds-per-candidate 9000 \
+    --hypothesis-seed "close productness_neg_acc gap below 0.85" \
+    > research_loop/autoreason_student_v2.log 2>&1 &
+
+# Real run on dino_v2 teacher (productness ON; ~50h × per-candidate budget)
+nohup .venv/bin/python -u -m research_loop.tournament autoreason \
+    --target dino_v2 \
+    --max-passes 10 \
+    --convergence 2 \
+    --max-seconds-per-candidate 18000 \
+    > research_loop/autoreason_dino_v2.log 2>&1 &
+```
+
+What each pass does (no manual steps):
+
+1. **Critic LLM** reads `train_v2.py` + last 30 rows of `results_v2.tsv` + last 10 outcome JSON records → produces a structured `Critique`. CritiqueRecord written to history.
+2. **Author B LLM** reads critique + trainer source → produces a unified-diff patch. PatchProposalRecord written.
+3. **Synthesizer LLM** reads A's empty patch + B's patch (anonymized X/Y labels, no metric history) → produces a conservative AB synthesis patch. SynthesisRecord written.
+4. For each kind ∈ {A, B, AB}: `apply_patch` (V1-safety + revert-on-exit) → `adapter.train(max_seconds=N)` → parse metrics → `Outcome` record. Working tree restored after each candidate.
+5. `promote.decide()` picks winner under guardrails (`combined > A + 0.003`, `recall@1` not regressed, `productness_neg_acc` not regressed, status=success). `Decision` record written.
+6. If A won → consecutive_count++. If `>= --convergence`, exit 0. Else next pass.
+7. On `--max-passes` exhausted: exit non-zero, decision history preserved.
+
+**Pre-conditions:**
+- `ANTHROPIC_API_KEY` set in env or `~/.hermes/.env`
+- Working tree clean (autoreason refuses dirty trees — patches need to revert cleanly)
+- `productness_val_paths.txt` regenerated (see §1)
+
+**Cost ceiling (default 15 passes × 5 LLM calls):** ≤ ~$5 per autoreason run on `claude-sonnet-4-6`. If you remove the time budget, a single hallucinated patch could chew 50h GPU. Always set `--max-seconds-per-candidate`.
+
+**Audit trail:** `research_loop/history.jsonl` records every LLM call's raw text plus parsed dataclass fields. A 5-pass run writes ≥ 50 records spanning candidate / outcome / decision / critique / patch_proposal / synthesis types. Replayable post-hoc.
+
+### 2b. Manual baseline run (when LLM access is unavailable)
+
+If you can't reach the Anthropic API, fall back to the original `run-round --baseline-only` flow:
+
+```bash
+nohup .venv/bin/python -u -m research_loop.tournament run-round \
+    --target student_v2 --baseline-only \
     > student_finetune/run_v2_production.log 2>&1 &
 ```
 
-What `run-round --baseline-only` does:
-1. **propose**: assigns a fresh `round_id`, writes a kind=A candidate to `research_loop/history.jsonl` (no B/AB — `--baseline-only`)
-2. **rank**: judges score the single A candidate
-3. **run**: subprocess `train_v2.py` (or `train_dino_v2.py`) with `DEFAULT_EPOCHS` (30 / 20)
-4. After training: parses `metrics_final_v2.json`, writes an `Outcome` record to `history.jsonl`, appends a row to `results_v2.tsv` via the V2-only adapter
-5. **promote**: applies `decide()` guardrails. With only A in the round, A wins by default; a `Decision` record records the deployment-gate verdict from `is_deployable()`.
+This emits a single A candidate, runs it, and writes the Outcome+Decision records — no Critic/Author B/Synthesizer, just the productization path.
 
-Stage 1 writes the LoRA adapter to `dino_finetune/output/best_adapter/`. Stage 2 reads it from the same path. The teacher embedding cache is keyed on the adapter's SHA-256 prefix (`workspace/output/teacher_cache/dinov3_ft/<adapter_sha>/`), so a teacher retrain → new sha → fresh cache subdir built automatically on first student epoch. No `mv`, no `rm -rf`, no swap.
+### 2c. Single-candidate experiments
 
-Stage 2 first-epoch is ~14 min (cache warmup); subsequent epochs ~5–8 min.
-
-### 2b. Subsequent experiments (after baseline lands)
+To run a hand-crafted patch outside the autoreason loop:
 
 ```bash
-# Propose a real experiment (B/AB will need real patches before run)
-.venv/bin/python -m research_loop.tournament propose \
-    --target student_v2 \
-    --hypothesis "raise commodity_ratio from 0.15 to 0.20"
-# Edit the patches in research_loop/history.jsonl, then:
+.venv/bin/python -m research_loop.tournament propose --target student_v2 --hypothesis "..."
+# Edit the B / AB patches in research_loop/history.jsonl, then:
 .venv/bin/python -m research_loop.tournament run --candidate <B_id>
-.venv/bin/python -m research_loop.tournament run --candidate <AB_id>
 .venv/bin/python -m research_loop.tournament promote --round <round_id>
 ```
+
+### Cache / adapter notes (apply to all 3 modes)
+
+Stage-1 (DINO) writes the LoRA adapter to `dino_finetune/output/best_adapter/`. Stage-2 (student) reads it from the same path. The teacher embedding cache is keyed on the adapter's SHA-256 prefix (`workspace/output/teacher_cache/dinov3_ft/<adapter_sha>/`) — a teacher retrain → new sha → fresh cache subdir built automatically. No `mv`, no `rm -rf`, no swap. Student first-epoch is ~14 min (cache warmup); subsequent epochs ~5–8 min.
 
 Watch progress:
 

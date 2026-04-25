@@ -34,3 +34,13 @@ run_*.log
 student_finetune/productness_val_paths.txt
 research_loop/history.jsonl
 research_loop/tournament_results_v2.tsv
+
+# Local-only / not for shared history:
+#   .claude/           — per-machine Claude Code config + scheduled-task locks
+#   workspace/         — large training outputs (best.pt, teacher caches ~700MB)
+#   RADIO/             — vendored 3rd-party library (121MB); pull separately if needed
+#   dino_finetune/output/ — DINOv3 LoRA adapter checkpoint; obtain via shared storage
+.claude/
+workspace/
+RADIO/
+dino_finetune/output/

@@ -1,22 +1,25 @@
-# Handoff — `feat/autoreason-cls-umbrella` branch
+# Handoff — autoresearch on `master`
 
-Last touched 2026-04-25 by joesu-angible. Branch implements GitHub umbrella issue [#6](https://github.com/joesu-angible/autoresearch/issues/6) (children #4 autoreason tournament, #5 productness CLS branch). All scope was redirected from V1 → V2 per project decision.
+Last touched 2026-04-26 by joesu-angible. All planned scope from issues [#6](https://github.com/joesu-angible/autoresearch/issues/6) (umbrella), [#9](https://github.com/joesu-angible/autoresearch/issues/9) Goals 1+3, [#11](https://github.com/joesu-angible/autoresearch/issues/11), and [#14](https://github.com/joesu-angible/autoresearch/issues/14) is merged on master.
 
 ---
 
 ## TL;DR — what's done
 
-| Status | Item |
-|---|---|
-| ✅ | Autoreason tournament scaffold (`research_loop/`) — candidate schema, rule-based judges, evaluators, V2-only target adapters, CLI |
-| ✅ | Productness CLS branch wired into `train_v2.py` — `ProductnessLCNet`, BCE loss, train + val eval, 10% deterministic holdout |
-| ✅ | Two-output ONNX export (`export_onnx.py --include-productness`) |
-| ✅ | Tournament promotion guardrails + deployment gate (productness as separate AND-clause veto, **not** blended into `combined`) |
-| ✅ | 73 unit + integration tests pass |
-| ✅ | 1-epoch GPU smoke run completed end-to-end (`combined=0.792`, `productness pos_acc=0.99 / neg_acc=0.76` on 45k val holdout) |
-| ⏸️ | Full 30-epoch V2 production run (~7 h) — not yet launched |
-| ⏸️ | DINO V2 smoke (T18) — adapter exists but not exercised end-to-end |
-| ⏸️ | Nothing committed yet — all work is in working tree |
+| Status | Item | Landed via |
+|---|---|---|
+| ✅ | Autoreason tournament scaffold (`research_loop/`) — candidate schema, rule-based judges, evaluators, V2-only target adapters, CLI | PR #8 |
+| ✅ | Productness CLS branch — `ProductnessLCNet`, BCE+focal loss, val holdout, two-output ONNX export | PR #8 |
+| ✅ | Tournament promotion guardrails + deploy gate (productness as separate AND-clause veto, never blended into `combined`) | PR #8 |
+| ✅ | Full autoreason loop — Critic / Author B / Synthesizer LLM agents, multi-CLI subprocess (hermes / claude / codex), per-role overrides, k=2 convergence, mid-apply guard | PR #12 + #16 |
+| ✅ | Per-trial time budget (`--max-seconds-per-candidate`) — SIGTERM/grace/SIGKILL with `metrics_progress_v2.json` partial-state recovery | PR #12 (issue #9 Goal 1) |
+| ✅ | Slack-bot-friendly status surface (`tournament status`, run dir, summary.json, autoreason.log Tee) | PR #12 |
+| ✅ | `propose --variants <file.jsonl>` for N-way candidate sweeps (productness weight sweep recipe shipped) | PR #13 (issue #9 Goal 3) |
+| ✅ | **`autoreason --resume <run_id>` for crash recovery** — `outcome_started` state machine, working-tree recovery, run-scoped convergence counter | PR #16 (issue #14) |
+| ✅ | 205 unit + integration tests pass on CPU (no real GPU/LLM in suite) |  |
+| ✅ | 1h 8min long smoke validated autoreason + resume end-to-end with real LCNet metrics (combined=0.7831, recall_1=0.8934) | manual |
+| ⏸️ | Full multi-pass production run on dino_v2 / student_v2 — not yet launched |  |
+| ⏸️ | Issue #15 (issue #9 Goal 2 split-out) — proxy → full multi-stage rounds — open, deferred |  |
 
 ---
 
@@ -35,22 +38,36 @@ Project memories that auto-load each session:
 
 ---
 
-## Files I changed
+## Where the code lives (post-merge)
+
+All scope is on `master`. Key directories:
 
 ```
-M  .gitignore                                  # ignore productness_val_paths.txt + tournament artifacts
-M  student_finetune/train.py                   # additive: forward_embeddings_train_with_summary, EpochStats productness fields, run_train_epoch productness kwargs (all default off)
-M  student_finetune/train_v2.py                # ProductnessLCNet, val holdout loader, eval_productness, optimizer + run_train_epoch wiring, OUTPUT_DIR/cache fallback
-M  student_finetune/export_onnx.py             # LCNetProductnessExport + --include-productness flag
-M  student_finetune/prepare.py                 # bug fix: load_teacher_embeddings now backfills None entries before np.stack
-?? SPEC.md, PLAN.md, TASKS.md, HANDOFF.md      # planning artifacts (this file)
-?? research_loop/                              # entire tournament scaffold (new)
-?? student_finetune/tests/test_productness_*.py
-?? student_finetune/tests/test_export_onnx_productness.py
-?? student_finetune/tools/build_productness_val.py
+research_loop/                       Autoreason tournament + resume infrastructure
+  agents/                            Critic / Author B / Synthesizer LLM clients
+  targets/                           V2-only adapters (student_v2, dino_v2)
+  candidate.py                       Schema (Candidate / Outcome / Decision / Critique /
+                                       PatchProposal / Synthesis / OutcomeStarted)
+  patch.py                           git apply context manager + V1 safety
+  promote.py                         decide() + is_deployable() guardrails
+  resume.py                          Run-state recovery primitives (issue #14)
+  variants.py                        JSONL sweep file loader (issue #9 Goal 3)
+  tournament.py                      CLI: propose/rank/run/promote/run-round/autoreason/status
+  tools/autoreason_smoke.py          30-second pre-flight LLM round-trip
+  sweeps/                            Operator sweep recipes (productness_weight.jsonl)
+  history.jsonl                      Append-only audit trail (gitignored)
+  runs/<run_id>/                     Per-run summary.json / autoreason.log / pid (gitignored)
+
+student_finetune/
+  train_v2.py                        ProductnessLCNet, BCE+focal, val holdout
+  export_onnx.py                     --include-productness two-output export
+  tools/build_productness_val.py     Deterministic 10% val holdout
+
+dino_finetune/
+  train_dino_v2.py                   Teacher-side productness CLS head (issue #5)
 ```
 
-V1 default behavior is preserved — verified by `test_v1_default_path_unchanged` and by the V1 unit-test pass count being unchanged before/after my edits (19 pre-existing failures are unrelated).
+V1 paths (`student_finetune/train.py`, `dino_finetune/train_dino.py`) are **never touched** by autoreason — patch applicator + LLM system prompts both enforce it.
 
 ---
 

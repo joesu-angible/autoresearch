@@ -30,6 +30,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -40,6 +41,7 @@ from research_loop.candidate import (
     CritiqueRecord,
     Decision,
     Outcome,
+    OutcomeStartedRecord,
     PatchProposalRecord,
     SynthesisRecord,
     append_history,
@@ -394,12 +396,26 @@ def _write_run_summary(
     best_so_far: dict | None,
     latest_critique_summary: str,
     status: str,
+    config: dict | None = None,
 ) -> None:
-    """Atomic JSON dump consumed by `tournament status` and external bots.
+    """Atomic JSON dump consumed by `tournament status`, external bots,
+    and resume (issue #14).
 
     Atomic via temp + rename so a concurrent reader never sees a half-written file.
+
+    `config` is the autoreason invocation config (LLM CLI, models, budgets,
+    etc.) needed to resume the run after a crash. Persisted on first write
+    only — subsequent writes preserve the existing config block to keep it
+    immutable across the run's lifetime.
     """
     import json
+    summary = run_dir / "summary.json"
+    existing_config: dict | None = None
+    if summary.exists():
+        try:
+            existing_config = json.loads(summary.read_text()).get("config")
+        except json.JSONDecodeError:
+            existing_config = None
     payload = {
         "run_id": run_id,
         "target": target,
@@ -412,9 +428,9 @@ def _write_run_summary(
         "best_so_far": best_so_far,
         "latest_critique_summary": latest_critique_summary,
         "status": status,
+        "config": existing_config if existing_config is not None else config,
     }
     run_dir.mkdir(parents=True, exist_ok=True)
-    summary = run_dir / "summary.json"
     tmp = summary.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2))
     tmp.replace(summary)
@@ -457,7 +473,7 @@ def _git_status_clean(repo: Path) -> bool:
 
 
 def cmd_autoreason(
-    target: str,
+    target: str | None,
     *,
     max_passes: int,
     convergence: int,
@@ -478,6 +494,7 @@ def cmd_autoreason(
     synthesizer_cli: str | None = None,
     synthesizer_model: str | None = None,
     agent_client_factory=None,  # test injection; takes (role_name) → LLMClient
+    resume: str | None = None,  # run_id to resume; mutex with target
 ) -> int:
     """Fully autonomous autoreason loop.
 
@@ -494,11 +511,60 @@ def cmd_autoreason(
     `agent_client_factory` is injected for testing — production callers pass
     None and we construct a real CLI-backed client per role.
     """
+    # ------------------------------------------------------------------
+    # Resume branch (issue #14): load all invocation state from disk
+    # ------------------------------------------------------------------
+    resume_run_dir: Path | None = None
+    if resume:
+        from research_loop.resume import (
+            check_pid_dead, find_run_dir, load_run_config, load_run_target,
+        )
+        resume_run_dir = find_run_dir(RUNS_DIR, resume)
+        if resume_run_dir is None:
+            print(f"--resume: no run dir at {RUNS_DIR / resume}", file=sys.stderr)
+            return 2
+        if not check_pid_dead(resume_run_dir):
+            print(
+                f"--resume: prior runner is still alive (see "
+                f"{resume_run_dir}/autoreason.pid). Refusing to start a "
+                f"second runner. Wait for it to exit, or kill it explicitly.",
+                file=sys.stderr,
+            )
+            return 2
+        cfg = load_run_config(resume_run_dir)
+        if not cfg:
+            print(
+                f"--resume: {resume_run_dir}/summary.json has no `config` block "
+                f"(too old to resume; pre-T2 run). Start a fresh autoreason.",
+                file=sys.stderr,
+            )
+            return 2
+        # Override invocation from persisted config — operator does NOT re-pass
+        # these flags. Argparse already rejects --resume with target/llm-* flags.
+        target = cfg.get("target") or load_run_target(resume_run_dir)
+        max_passes = int(cfg.get("max_passes", max_passes))
+        convergence = int(cfg.get("convergence", convergence))
+        max_seconds_per_candidate = cfg.get("max_seconds_per_candidate", max_seconds_per_candidate)
+        hypothesis_seed = cfg.get("hypothesis_seed", hypothesis_seed)
+        dry_run = bool(cfg.get("dry_run", dry_run))
+        llm_cli = cfg.get("llm_cli", llm_cli)
+        llm_model = cfg.get("llm_model", llm_model)
+        llm_provider = cfg.get("llm_provider", llm_provider) or "auto"
+        critic_cli = cfg.get("critic_cli", critic_cli)
+        critic_model = cfg.get("critic_model", critic_model)
+        author_cli = cfg.get("author_cli", author_cli)
+        author_model = cfg.get("author_model", author_model)
+        synthesizer_cli = cfg.get("synthesizer_cli", synthesizer_cli)
+        synthesizer_model = cfg.get("synthesizer_model", synthesizer_model)
+
     if target not in TARGETS:
         print(f"Unknown target: {target}", file=sys.stderr)
         return 2
 
-    if not dry_run and not _git_status_clean(REPO_ROOT):
+    # On resume the working tree may be dirty from a crashed prior runner;
+    # we'll do recover_working_tree below using the unfinished candidates'
+    # diffs. On a fresh run, refuse a dirty tree.
+    if not resume and not dry_run and not _git_status_clean(REPO_ROOT):
         print(
             "Working tree is dirty. autoreason will apply and revert patches "
             "via `git apply`; commit or stash uncommitted changes before running.",
@@ -539,9 +605,20 @@ def cmd_autoreason(
 
     # Run-level state for the status surface (Slice 1 of T9)
     import datetime
-    run_id = _new_run_id()
-    run_dir = RUNS_DIR / run_id
-    started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    if resume:
+        run_id = resume
+        run_dir = resume_run_dir  # type: ignore[assignment]
+        # Preserve original started_at from the prior run's summary
+        try:
+            started_at = json.loads((run_dir / "summary.json").read_text()).get(
+                "started_at", datetime.datetime.now(datetime.timezone.utc).isoformat()
+            )
+        except (OSError, json.JSONDecodeError):
+            started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    else:
+        run_id = _new_run_id()
+        run_dir = RUNS_DIR / run_id
+        started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     current_pointer = RUNS_DIR / f"{target}_CURRENT.txt"
     run_dir.mkdir(parents=True, exist_ok=True)
     current_pointer.write_text(run_id)
@@ -563,6 +640,26 @@ def cmd_autoreason(
         sys.stdout, sys.stderr = _orig_stdout, _orig_stderr
         _log_fh.close()
 
+    # Config block persisted on first summary write; resume reads it back to
+    # restore the invocation when picking up after a crash (issue #14).
+    run_config = {
+        "target": target,
+        "max_passes": max_passes,
+        "convergence": convergence,
+        "max_seconds_per_candidate": max_seconds_per_candidate,
+        "hypothesis_seed": hypothesis_seed,
+        "dry_run": dry_run,
+        "llm_cli": llm_cli,
+        "llm_model": llm_model,
+        "llm_provider": llm_provider,
+        "critic_cli": critic_cli,
+        "critic_model": critic_model,
+        "author_cli": author_cli,
+        "author_model": author_model,
+        "synthesizer_cli": synthesizer_cli,
+        "synthesizer_model": synthesizer_model,
+    }
+
     def _status_dump(
         pass_index: int, status: str, latest_critique: str = "",
         last_decision_dict: dict | None = None, best: dict | None = None,
@@ -573,6 +670,7 @@ def cmd_autoreason(
             consecutive_a_wins=consecutive_a_wins, convergence=convergence,
             last_decision=last_decision_dict, best_so_far=best,
             latest_critique_summary=latest_critique, status=status,
+            config=run_config,
         )
 
     consecutive_a_wins = 0
@@ -581,11 +679,111 @@ def cmd_autoreason(
     last_decision_dict: dict | None = None
     best_so_far: dict | None = None
 
-    _status_dump(0, "starting")
+    # Resume recovery: re-run unfinished candidates, finalize their round if
+    # all completions land, then advance to the next pass.
+    start_pass = 1
+    if resume:
+        from research_loop.candidate import find_unfinished_candidates, read_decisions
+        from research_loop.resume import (
+            compute_consecutive_a_wins,
+            count_decisions_for_run,
+            recover_working_tree,
+        )
+
+        unfinished = find_unfinished_candidates(HISTORY_PATH, run_id=run_id)
+        print(f"  resume: {len(unfinished)} unfinished candidate(s) detected")
+        # Refuse if working tree has changes outside the unfinished diffs
+        recover_working_tree(REPO_ROOT, unfinished)
+
+        if unfinished:
+            # Re-run each unfinished candidate inline (same machinery as the
+            # main loop but without re-doing Critic/Author/Synthesizer — those
+            # records are already in history).
+            for cand in unfinished:
+                print(f"  resume: re-running {cand.kind} ({cand.id}) from round {cand.round_id}")
+                adapter = TARGETS[target]()
+                adapter.apply_patch(cand)
+
+                # Mid-apply guard mirrors the main loop's behavior: a malformed
+                # diff written by the LLM does not get retried forever — record
+                # status=failed and move on. Without this, resume would re-trigger
+                # the same `git apply` failure every time the operator restarts.
+                if cand.kind != "A" and cand.patch.strip():
+                    check = subprocess.run(
+                        ["git", "apply", "--check"], input=cand.patch,
+                        cwd=REPO_ROOT, capture_output=True, text=True, check=False,
+                    )
+                    if check.returncode != 0:
+                        err = check.stderr.strip().splitlines()[-1] if check.stderr.strip() else "git apply --check failed"
+                        print(f"    resume: apply rejected for {cand.kind} ({err}) → status=failed")
+                        append_history(HISTORY_PATH, Outcome(
+                            candidate_id=cand.id, round_id=cand.round_id, target=target,
+                            status="failed", metrics={},
+                            elapsed_seconds=0.0, log_path="",
+                            metrics_json_path="",
+                        ))
+                        continue
+
+                append_history(HISTORY_PATH, OutcomeStartedRecord(
+                    candidate_id=cand.id, round_id=cand.round_id, target=target,
+                    pass_index=0, kind=cand.kind, run_id=run_id,
+                ))
+                if cand.kind == "A" or not cand.patch.strip():
+                    outcome = adapter.train(cand, max_seconds=max_seconds_per_candidate, dry_run=dry_run)
+                else:
+                    with apply_patch(cand.patch, repo=REPO_ROOT, require_clean_tree=False):
+                        outcome = adapter.train(cand, max_seconds=max_seconds_per_candidate, dry_run=dry_run)
+                outcome_record = Outcome(
+                    candidate_id=cand.id, round_id=cand.round_id, target=target,
+                    status=outcome.status, metrics=outcome.metrics,
+                    elapsed_seconds=outcome.elapsed_seconds,
+                    log_path=str(outcome.log_path),
+                    metrics_json_path=str(outcome.metrics_json_path),
+                )
+                append_history(HISTORY_PATH, outcome_record)
+                if not dry_run and outcome.status == "success":
+                    adapter.log_row(cand, outcome)
+                print(f"    status={outcome.status}")
+
+        # If a round has all candidates with outcomes but no decision, finalize it.
+        decided_round_ids = {d.round_id for d in read_decisions(HISTORY_PATH) if d.target == target}
+        candidate_round_ids = {c.round_id for c in read_history(HISTORY_PATH) if c.target == target}
+        outcome_round_ids = {o.round_id for o in read_outcomes(HISTORY_PATH) if o.target == target}
+        for rid in candidate_round_ids - decided_round_ids:
+            # All this round's candidates must have outcomes before promoting
+            round_cands = [c for c in read_history(HISTORY_PATH) if c.round_id == rid]
+            outcomes_for_round = [o for o in read_outcomes(HISTORY_PATH) if o.round_id == rid]
+            if len(outcomes_for_round) >= len(round_cands):
+                print(f"  resume: finalizing pending round {rid}")
+                rc = cmd_promote(rid)
+                if rc != 0:
+                    print(f"  resume: promote failed for {rid}", file=sys.stderr)
+                    _close_narrative_log()
+                    return rc
+
+        # Restore convergence counter from THIS RUN'S completed decisions only.
+        # Without scoping by run_id, prior runs' decisions for this target would
+        # pollute the counter — a fresh resume of a target whose previous run
+        # converged would see "already converged" and exit without doing anything.
+        consecutive_a_wins = compute_consecutive_a_wins(
+            HISTORY_PATH, target, convergence, run_id=run_id,
+        )
+        n_decisions = count_decisions_for_run(HISTORY_PATH, target, run_id)
+        start_pass = n_decisions + 1
+        print(f"  resume: continuing from pass {start_pass}/{max_passes} "
+              f"(consecutive A wins: {consecutive_a_wins}/{convergence})")
+
+        if consecutive_a_wins >= convergence:
+            print(f"\nResume: already converged (A won {convergence} consecutive). Exiting.")
+            _status_dump(start_pass - 1, "converged")
+            _close_narrative_log()
+            return 0
+
+    _status_dump(start_pass - 1 if resume else 0, "starting" if not resume else "resumed")
     print(f"  run_id: {run_id}")
     print(f"  status: {run_dir}/summary.json")
 
-    for pass_index in range(1, max_passes + 1):
+    for pass_index in range(start_pass, max_passes + 1):
         print(f"\n=== autoreason pass {pass_index}/{max_passes} ===")
         round_id = new_round_id()
 
@@ -673,6 +871,37 @@ def cmd_autoreason(
             print(f"  running {cand.kind} ({cand.id})")
             adapter = TARGETS[target]()
             adapter.apply_patch(cand)  # validates V1-safety; no-op for A
+
+            # Mid-apply guard (issue #14 follow-up): if the LLM-generated diff
+            # cannot apply (`git apply --check` fails), record a failed Outcome
+            # and move on — do NOT write outcome_started, since there is
+            # nothing to resume. Resume's find_unfinished_candidates would
+            # otherwise re-trigger the same broken `git apply` on every restart.
+            if cand.kind != "A" and cand.patch.strip():
+                check = subprocess.run(
+                    ["git", "apply", "--check"], input=cand.patch,
+                    cwd=REPO_ROOT, capture_output=True, text=True, check=False,
+                )
+                if check.returncode != 0:
+                    err = check.stderr.strip().splitlines()[-1] if check.stderr.strip() else "git apply --check failed"
+                    print(f"    apply_patch rejected: {err} → status=failed")
+                    append_history(HISTORY_PATH, Outcome(
+                        candidate_id=cand.id, round_id=round_id, target=target,
+                        status="failed", metrics={},
+                        elapsed_seconds=0.0, log_path="",
+                        metrics_json_path="",
+                    ))
+                    continue
+
+            # State-machine marker for resume (issue #14): written *after* all
+            # safety + apply checks have passed but *before* training starts.
+            # A crash after this point but before the matching Outcome below
+            # leaves the candidate detectable as unfinished via
+            # find_unfinished_candidates(run_id).
+            append_history(HISTORY_PATH, OutcomeStartedRecord(
+                candidate_id=cand.id, round_id=round_id, target=target,
+                pass_index=pass_index, kind=cand.kind, run_id=run_id,
+            ))
             if cand.kind == "A" or not cand.patch.strip():
                 # Empty patch = no working-tree change
                 outcome = adapter.train(cand, max_seconds=max_seconds_per_candidate, dry_run=dry_run)
@@ -926,7 +1155,12 @@ def main(argv: list[str] | None = None) -> int:
 
     p_auto = sub.add_parser("autoreason",
         help="fully-autonomous LLM-driven loop (Critic + Author B + Synthesizer)")
-    p_auto.add_argument("--target", required=True, choices=list(TARGETS))
+    # --target is required for new runs; --resume loads target from disk.
+    # Post-parse validation enforces "exactly one of {--target, --resume}".
+    p_auto.add_argument("--target", choices=list(TARGETS), default=None)
+    p_auto.add_argument("--resume", default=None, metavar="RUN_ID",
+                        help="resume a crashed/interrupted run from research_loop/runs/<RUN_ID>; "
+                             "all other config flags ignored — loaded from the run's summary.json")
     p_auto.add_argument("--max-passes", type=int, default=15,
                         help="ceiling on number of refinement passes (default 15)")
     p_auto.add_argument("--convergence", type=int, default=2,
@@ -977,6 +1211,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "status":
         return cmd_status(target=args.target, run_id=args.run)
     if args.cmd == "autoreason":
+        # Validate target/resume mutex
+        if args.resume and args.target:
+            print("--resume and --target are mutually exclusive (target is loaded "
+                  "from the run's summary.json on resume)", file=sys.stderr)
+            return 2
+        if not args.resume and not args.target:
+            print("autoreason: --target is required (or pass --resume RUN_ID)",
+                  file=sys.stderr)
+            return 2
         return cmd_autoreason(
             args.target,
             max_passes=args.max_passes,
@@ -984,6 +1227,7 @@ def main(argv: list[str] | None = None) -> int:
             max_seconds_per_candidate=args.max_seconds_per_candidate,
             hypothesis_seed=args.hypothesis_seed,
             dry_run=args.dry_run,
+            resume=args.resume,
             llm_cli=args.llm_cli,
             llm_model=args.llm_model,
             llm_provider=args.llm_provider,

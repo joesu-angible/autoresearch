@@ -1,10 +1,29 @@
-loguru
-numpy
-onnxruntime-gpu>=1.17,<1.20
-peft
-Pillow
-timm
-torch
-torchvision
-transformers
-matplotlib
+# autoresearch runtime dependencies (CPU-import safe; GPU bits via PyTorch CUDA build)
+# Install with:
+#   pip install -r requirements.txt
+# For PyTorch with CUDA 12.8 wheels add:
+#   --extra-index-url https://download.pytorch.org/whl/cu128
+#
+# This is the canonical pinned-range list; pyproject.toml mirrors it for `uv pip install -e .`.
+
+# Core ML
+torch>=2.9
+torchvision>=0.24
+transformers>=4.45
+peft>=0.12
+timm>=1.0
+
+# ONNX export (student_finetune/export_onnx.py)
+onnxruntime-gpu>=1.17,<2
+
+# Data / utilities
+numpy>=2.0
+Pillow>=10
+einops>=0.8
+huggingface-hub>=0.24
+
+# Logging
+loguru>=0.7
+
+# Testing
+pytest>=8

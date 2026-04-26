@@ -183,6 +183,16 @@ See [HANDOFF.md](HANDOFF.md) for the full operator runbook (modes 2a / 2b / 2c, 
 
 For a worked example showing exactly what each pass does — Critic findings, Author B's diff, Synthesizer's blend, metric tables, convergence trajectory — see [AUTOREASON-WALKTHROUGH.md](AUTOREASON-WALKTHROUGH.md).
 
+### Crashes happen — `--resume <run_id>` picks up where you left off
+
+```bash
+# Crashed at pass 5/15? Just resume — the unfinished candidate re-runs,
+# no LLM re-paid, working tree auto-recovered. Same run_id, same audit trail.
+.venv/bin/python -m research_loop.tournament autoreason --resume run<id>
+```
+
+See [HANDOFF.md §2a-bis](HANDOFF.md) for the full resume runbook (pre-flight checks, LLM cost on resume, working-tree divergence handling).
+
 ## Adding New Research Topics
 
 Create a new subfolder following the existing pattern:

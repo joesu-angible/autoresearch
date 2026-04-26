@@ -1,27 +1,27 @@
-# TODO: `propose --variants` (issue #9 Goal 3)
+# TODO: autoreason --resume (issue #14)
 
-Branch: `feat/batch-propose-variants`
+Branch: `feat/autoreason-resume`
 
 ## Tasks
 
-- [ ] **T1** Variants file schema + loader (`_load_variants`, JSONL parse, validation) — `tournament.py` + new `test_variants.py`
-- [ ] **T2** `propose --variants <path>` CLI flag (mutex with `--baseline-only`, emits 1 A + N B) — `tournament.py` + test
-- [ ] **CHECKPOINT** all tests pass; manual `propose --variants` sanity check
-- [ ] **T3** Verify `decide()` + `rank()` handle N>2 — test-only, no production change
-- [ ] **CHECKPOINT** spec assumption verified
-- [ ] **T4** `run-round --variants` passthrough — `tournament.py` + test
-- [ ] **T5** Productness weight sweep recipe (`sweeps/productness_weight.jsonl`) + HANDOFF doc
-- [ ] **CHECKPOINT** acceptance criteria met, working tree clean, ready for PR
+- [ ] **T1** `OutcomeStartedRecord` schema + reader + writer in `cmd_autoreason` — new `test_outcome_started.py` (~6 cases) + `test_autoreason_loop.py` extension (+2)
+- [ ] **CHECKPOINT** state machine in place — every running candidate detectable from history alone
+- [ ] **T2** Run-state recovery primitives (`research_loop/resume.py`): `find_run_dir`, `check_pid_dead`, `load_run_config`, `compute_consecutive_a_wins`; extend `_write_run_summary` with config block — new `test_resume_primitives.py` (~8 cases)
+- [ ] **T3** Working-tree recovery: `recover_working_tree`, `WorkingTreeDivergedError` — new `test_working_tree_recovery.py` (~5 cases)
+- [ ] **CHECKPOINT** all primitives unit-tested in isolation
+- [ ] **T4** `cmd_autoreason --resume <run_id>` orchestrator + 7-scenario crash-matrix — new `test_autoreason_resume.py` (~7 cases)
+- [ ] **CHECKPOINT** all 8 issue #14 acceptance criteria met
+- [ ] **T5** HANDOFF section §2a-bis + CLI help + README link
 
 ## Verification gate before PR
 
-- [ ] `pytest research_loop/tests dino_finetune/tests student_finetune/tests/test_*productness*.py student_finetune/tests/test_adapter_sha.py -q` — all green
-- [ ] `python -m research_loop.tournament propose --help` shows `--variants`
-- [ ] All 4 productness-sweep diffs pass `git apply --check`
-- [ ] One atomic commit per task (5 commits total), conventional-commit style
+- [ ] `pytest research_loop/tests dino_finetune/tests student_finetune/tests/test_*productness*.py student_finetune/tests/test_adapter_sha.py -q` — all green (≥215 tests)
+- [ ] `python -m research_loop.tournament autoreason --help` shows `--resume`
+- [ ] One atomic commit per task (5 commits), conventional-commit style
+- [ ] Working tree clean after test runs
 
-## Notes / open questions for operator
+## Open questions for operator (await confirmation before T1)
 
-1. Confirm variants mode does NOT auto-synthesize an AB — assumed default.
-2. Confirm convention `research_loop/sweeps/<name>.jsonl` for sweep files.
-3. Variants run sequentially on one GPU (not parallelized).
+1. Mid-apply crash policy: **(a)** restart the pass, or **(b)** mark candidate failed + continue? Default: **(a)**.
+2. Resume preserves original run_id (single run = single audit trail)? Default: **yes**.
+3. Confirm re-paying ~$0.10 LLM cost on mid-LLM crash is acceptable (vs building partial-LLM recovery)? Default: **acceptable**.

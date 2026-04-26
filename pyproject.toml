@@ -1,26 +1,37 @@
 [project]
 name = "autoresearch"
-version = "0.1.0"
-description = "Autonomous pretraining research swarm"
+version = "0.2.0"
+description = "Autonomous ML research platform — autoreason loop for ReID distillation"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "einops>=0.8.0",
-    "kernels>=0.11.7",
-    "matplotlib>=3.10.8",
-    "numpy>=2.2.6",
-    "pandas>=2.3.3",
-    "peft>=0.12.0",
-    "pyarrow>=21.0.0",
-    "requests>=2.32.0",
-    "rustbpe>=0.1.0",
-    "tiktoken>=0.11.0",
-    "torch==2.9.1",
-    "transformers>=4.45.0",
+    # Core ML
+    "torch>=2.9",
+    "torchvision>=0.24",
+    "transformers>=4.45",
+    "peft>=0.12",
+    "timm>=1.0",
+    # ONNX export (export_onnx.py)
+    "onnxruntime-gpu>=1.17,<2",
+    # Data / utilities
+    "numpy>=2.0",
+    "Pillow>=10",
+    "einops>=0.8",
+    "huggingface-hub>=0.24",
+    # Logging
+    "loguru>=0.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
 ]
 
 [tool.uv.sources]
 torch = [
+    { index = "pytorch-cu128" },
+]
+torchvision = [
     { index = "pytorch-cu128" },
 ]
 

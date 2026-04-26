@@ -30,6 +30,7 @@ Usage:
 """
 
 import argparse
+import os
 import json
 import random
 import sys
@@ -116,10 +117,17 @@ COMMODITY_MAX_SAMPLES = 20000       # Cap commodity (full 30k overwhelms product
 # V2 feature flags
 USE_STRONG_AUG = True
 
-# V2 productness CLS branch (issue #5) — ON by default. Per project decision
-# (2026-04-25), all future models must ship with productness; the flag is kept
-# only as a debugging escape hatch / for proving the V1 path is unaffected.
-USE_PRODUCTNESS_CLS = True
+# V2 productness CLS branch (issue #5) — OFF by default per algo-lead direction
+# (2026-04-26): productness is moving out of the production pipeline.
+# Override via:
+#   1. CLI:   `python train_v2.py --productness`     (opt-in)
+#   2. env:   `USE_PRODUCTNESS_CLS=1` (also accepts "true", "yes", "on")
+# Resolution order: CLI > env > module default. The CLI flag rebinds this
+# constant after argparse so the rest of the file can keep reading it directly.
+USE_PRODUCTNESS_CLS = (
+    os.environ.get("USE_PRODUCTNESS_CLS", "0").lower()
+    in ("1", "true", "yes", "on")
+)
 PRODUCTNESS_CLS_WEIGHT = 0.02
 PRODUCTNESS_HEAD_HIDDEN = 256
 PRODUCTNESS_VAL_HOLDOUT_PATH = (
@@ -1078,7 +1086,16 @@ if __name__ == "__main__":
     parser.add_argument("--patience", type=int, default=7)
     parser.add_argument("--swa-epochs", type=int, default=3)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--productness",
+        action=argparse.BooleanOptionalAction, default=None,
+        help="Toggle productness CLS branch (use --productness or --no-productness). "
+             "Default reads USE_PRODUCTNESS_CLS env var (default ON). "
+             "CLI flag overrides env.",
+    )
     args = parser.parse_args()
+    if args.productness is not None:
+        USE_PRODUCTNESS_CLS = args.productness  # noqa: F811 — module-level rebind
 
     try:
         main(

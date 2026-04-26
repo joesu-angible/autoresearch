@@ -144,16 +144,20 @@ def is_deployable(result: CandidateResult) -> DeployVerdict:
 
     Independent of the tournament `decide()` — a candidate can win promotion
     over A (it's the new best) yet still not be shippable in absolute terms.
+
+    Productness thresholds are *conditional*: if the candidate exposes the
+    field, it must meet the threshold; if absent (model trained with
+    USE_PRODUCTNESS_CLS=False), the check is skipped. This lets the same
+    deploy gate serve both productness-enabled and productness-disabled
+    pipelines without requiring two parallel codepaths.
     """
     failures: list[str] = []
     if result.combined < DEPLOY_MIN_COMBINED:
         failures.append(
             f"combined={result.combined:.4f} < {DEPLOY_MIN_COMBINED}"
         )
-    if result.productness_pos_acc is None or result.productness_pos_acc < DEPLOY_MIN_PRODUCTNESS_POS_ACC:
-        actual = "missing" if result.productness_pos_acc is None else f"{result.productness_pos_acc:.4f}"
-        failures.append(f"productness_pos_acc={actual} < {DEPLOY_MIN_PRODUCTNESS_POS_ACC}")
-    if result.productness_neg_acc is None or result.productness_neg_acc < DEPLOY_MIN_PRODUCTNESS_NEG_ACC:
-        actual = "missing" if result.productness_neg_acc is None else f"{result.productness_neg_acc:.4f}"
-        failures.append(f"productness_neg_acc={actual} < {DEPLOY_MIN_PRODUCTNESS_NEG_ACC}")
+    if result.productness_pos_acc is not None and result.productness_pos_acc < DEPLOY_MIN_PRODUCTNESS_POS_ACC:
+        failures.append(f"productness_pos_acc={result.productness_pos_acc:.4f} < {DEPLOY_MIN_PRODUCTNESS_POS_ACC}")
+    if result.productness_neg_acc is not None and result.productness_neg_acc < DEPLOY_MIN_PRODUCTNESS_NEG_ACC:
+        failures.append(f"productness_neg_acc={result.productness_neg_acc:.4f} < {DEPLOY_MIN_PRODUCTNESS_NEG_ACC}")
     return DeployVerdict(deployable=not failures, reasons=tuple(failures))

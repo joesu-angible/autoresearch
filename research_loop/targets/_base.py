@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -104,7 +105,11 @@ class TargetAdapter:
         candidates regardless of partial-metric values.
         """
         epochs = max_epochs if max_epochs is not None else self.DEFAULT_EPOCHS
-        cmd = list(self.TRAIN_CMD) + ["--max-epochs", str(epochs)]
+        # Substitute "python" → sys.executable so the trainer subprocess uses
+        # the same interpreter as the orchestrator (some servers have no bare
+        # `python` on PATH; we should never depend on it).
+        cmd = [sys.executable if c == "python" else c for c in self.TRAIN_CMD]
+        cmd += ["--max-epochs", str(epochs)]
 
         if dry_run:
             return TrainOutcome(

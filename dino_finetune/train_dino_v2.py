@@ -1018,7 +1018,7 @@ if __name__ == "__main__":
         "--productness",
         action=argparse.BooleanOptionalAction, default=None,
         help="Toggle productness CLS branch (use --productness or --no-productness). "
-             "Default reads USE_PRODUCTNESS_CLS env var (default ON). "
+             "Default reads USE_PRODUCTNESS_CLS env var (default OFF). "
              "CLI flag overrides env.",
     )
     args = parser.parse_args()

@@ -72,10 +72,8 @@ LORA_TARGET_MODULES = ["q_proj", "v_proj"]
 def _auto_batch(default_at_24gb: int, vram_gb: float | None = None) -> int:
     """Choose a physical DINO V2 batch size from detected GPU VRAM.
 
-    The old linear 24GB→8 scaling returned only ~31 on 96GB GPUs. That was
-    overly conservative with checkpointing enabled, but full activation storage
-    can OOM at batch 64+ on 96GB when checkpointing is disabled. Keep high-VRAM
-    hosts at batch 32 by default; override `BATCH_SIZE` for manual sweeps.
+    Gradient checkpointing is enabled by default, so high-VRAM hosts can use a
+    large physical batch without OOM. Override `BATCH_SIZE` for manual sweeps.
 
     Override via env var: `BATCH_SIZE=128 python train_dino_v2.py`.
     Falls back to baseline default on CPU-only systems.
@@ -87,9 +85,9 @@ def _auto_batch(default_at_24gb: int, vram_gb: float | None = None) -> int:
         vram_gb = _torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
 
     if vram_gb >= 80.0:
-        return 32
+        return 128
     if vram_gb >= 48.0:
-        return 32
+        return 64
     if vram_gb >= 32.0:
         return 32
     return default_at_24gb
@@ -111,11 +109,11 @@ def _auto_num_workers(cpu_count: int | None = None) -> int:
     return 4
 
 
-# Effective batch = BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS is kept near 128 by
-# default for optimizer behavior, but large cards can now use one physical step.
+# Effective batch = BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS is kept near 256 by
+# default so high-VRAM hosts use both a large physical batch and accumulation.
 # Override either via env vars to tune independently.
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE") or _auto_batch(8))
-GRADIENT_ACCUMULATION_STEPS = int(os.environ.get("GRADIENT_ACCUMULATION_STEPS") or max(1, 128 // BATCH_SIZE))
+GRADIENT_ACCUMULATION_STEPS = int(os.environ.get("GRADIENT_ACCUMULATION_STEPS") or max(1, 256 // BATCH_SIZE))
 LR = 5e-4
 WEIGHT_DECAY = 0.01
 WARMUP_RATIO = 0.2
@@ -161,7 +159,7 @@ PRODUCTNESS_FOCAL_GAMMA = 2.0
 
 # -- Training --
 SEED = 42
-USE_GRADIENT_CHECKPOINTING = False
+USE_GRADIENT_CHECKPOINTING = True
 EVAL_EVERY_N_EPOCHS = 1
 MAX_STEPS_PER_EPOCH = 0
 MAX_TRAINING_SECONDS = 0

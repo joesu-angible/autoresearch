@@ -35,13 +35,13 @@ from train_dino_v2 import (  # noqa: E402
 )
 
 
-def test_gradient_checkpointing_disabled_by_default_on_large_vram_hosts():
-    assert USE_GRADIENT_CHECKPOINTING is False
+def test_gradient_checkpointing_enabled_by_default_for_large_batch():
+    assert USE_GRADIENT_CHECKPOINTING is True
 
 
 def test_auto_batch_uses_large_96gb_gpu_capacity():
-    """RTX PRO 6000 96GB should use a no-checkpointing-safe batch."""
-    assert _auto_batch(default_at_24gb=8, vram_gb=95.0) == 32
+    """RTX PRO 6000 96GB should use a large checkpointing-safe batch."""
+    assert _auto_batch(default_at_24gb=8, vram_gb=95.0) == 128
 
 
 def test_auto_batch_keeps_24gb_baseline_safe():
@@ -51,6 +51,14 @@ def test_auto_batch_keeps_24gb_baseline_safe():
 def test_auto_num_workers_scales_above_legacy_four_workers():
     assert _auto_num_workers(cpu_count=32) == 16
     assert _auto_num_workers(cpu_count=8) == 4
+
+
+def test_default_effective_batch_uses_accumulation_on_96gb_gpu():
+    batch = _auto_batch(default_at_24gb=8, vram_gb=95.0)
+    accum = max(1, 256 // batch)
+    assert batch == 128
+    assert accum == 2
+    assert batch * accum == 256
 
 
 def test_target_derivation_negative_label_is_zero():

@@ -10,13 +10,15 @@ from pathlib import Path
 
 import pytest
 
-from research_loop.candidate import Decision, append_history
+from research_loop.candidate import Decision, OutcomeStartedRecord, append_history
 from research_loop.resume import (
     check_pid_dead,
     compute_consecutive_a_wins,
+    count_decisions_for_run,
     find_run_dir,
     load_run_config,
     load_run_target,
+    round_ids_for_run,
 )
 
 
@@ -175,3 +177,79 @@ def test_consecutive_a_wins_filters_by_target(tmp_path: Path):
     assert compute_consecutive_a_wins(h, "student_v2", convergence=5) == 1
     # DINO stream has 2 (interspersed with student doesn't break the streak)
     assert compute_consecutive_a_wins(h, "dino_v2", convergence=5) == 2
+
+
+# ---------------------------------------------------------------------------
+# Cross-run scoping (real-world bug from long_smoke run1777189192-e3274f)
+# ---------------------------------------------------------------------------
+
+def _started_for_round(rid: str, run_id: str, cid: str = "c1") -> OutcomeStartedRecord:
+    return OutcomeStartedRecord(
+        candidate_id=cid, round_id=rid, target="student_v2",
+        pass_index=1, kind="A", run_id=run_id,
+    )
+
+
+def test_consecutive_a_wins_scopes_by_run_id(tmp_path: Path):
+    """Bug fix: prior runs' decisions for the same target must NOT count.
+    Reproduces real-world scenario where resuming a fresh run found 3 prior
+    A-wins decisions in history and falsely declared 'already converged'."""
+    h = tmp_path / "history.jsonl"
+    # Prior run (run-A) had 2 A wins for student_v2
+    append_history(h, _started_for_round("rA1", run_id="run-A", cid="cA1"))
+    append_history(h, _decision("rA1", "A"))
+    append_history(h, _started_for_round("rA2", run_id="run-A", cid="cA2"))
+    append_history(h, _decision("rA2", "A"))
+    # Fresh run (run-B) has no decisions yet — just one outcome_started
+    append_history(h, _started_for_round("rB1", run_id="run-B", cid="cB1"))
+
+    # Without run_id: 2 A wins counted (BUGGY — would force false convergence)
+    assert compute_consecutive_a_wins(h, "student_v2", convergence=2) == 2
+
+    # With run_id="run-B": 0 (correct — this run has no decisions)
+    assert compute_consecutive_a_wins(h, "student_v2", convergence=2, run_id="run-B") == 0
+
+    # With run_id="run-A": 2 (correct — prior run did converge)
+    assert compute_consecutive_a_wins(h, "student_v2", convergence=2, run_id="run-A") == 2
+
+
+def test_count_decisions_for_run_scopes_by_run_id(tmp_path: Path):
+    h = tmp_path / "history.jsonl"
+    append_history(h, _started_for_round("rA1", run_id="run-A", cid="cA1"))
+    append_history(h, _decision("rA1", "A"))
+    append_history(h, _started_for_round("rA2", run_id="run-A", cid="cA2"))
+    append_history(h, _decision("rA2", "B"))
+    append_history(h, _started_for_round("rB1", run_id="run-B", cid="cB1"))
+    append_history(h, _decision("rB1", "A"))
+
+    assert count_decisions_for_run(h, "student_v2", "run-A") == 2
+    assert count_decisions_for_run(h, "student_v2", "run-B") == 1
+    assert count_decisions_for_run(h, "student_v2", "no-such-run") == 0
+
+
+def test_round_ids_for_run_via_outcome_started(tmp_path: Path):
+    h = tmp_path / "history.jsonl"
+    append_history(h, _started_for_round("rA1", run_id="run-A", cid="c1"))
+    append_history(h, _started_for_round("rA1", run_id="run-A", cid="c2"))  # same round
+    append_history(h, _started_for_round("rA2", run_id="run-A", cid="c3"))
+    append_history(h, _started_for_round("rB1", run_id="run-B", cid="c4"))
+
+    assert round_ids_for_run(h, "run-A") == {"rA1", "rA2"}
+    assert round_ids_for_run(h, "run-B") == {"rB1"}
+    assert round_ids_for_run(h, "no-such") == set()
+
+
+def test_consecutive_a_wins_run_id_filter_with_streak_break(tmp_path: Path):
+    """Within a single run, B win still resets the streak."""
+    h = tmp_path / "history.jsonl"
+    append_history(h, _started_for_round("r1", run_id="X", cid="c1"))
+    append_history(h, _decision("r1", "A"))
+    append_history(h, _started_for_round("r2", run_id="X", cid="c2"))
+    append_history(h, _decision("r2", "A"))
+    append_history(h, _started_for_round("r3", run_id="X", cid="c3"))
+    append_history(h, _decision("r3", "B"))  # streak broken
+    append_history(h, _started_for_round("r4", run_id="X", cid="c4"))
+    append_history(h, _decision("r4", "A"))
+
+    # Trailing streak after B → only the final A counts
+    assert compute_consecutive_a_wins(h, "student_v2", convergence=5, run_id="X") == 1

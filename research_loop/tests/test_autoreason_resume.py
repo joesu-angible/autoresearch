@@ -336,6 +336,12 @@ def test_resume_when_outcomes_done_but_no_decision_runs_promote(
     )
     for c in (a, b, ab):
         append_history(history_in_tmp, c)
+        # OutcomeStarted record links the round to this run_id — required by
+        # the run-scoped count_decisions_for_run / compute_consecutive_a_wins.
+        append_history(history_in_tmp, OutcomeStartedRecord(
+            candidate_id=c.id, round_id=rid, target="student_v2",
+            pass_index=1, kind=c.kind, run_id=run_id,
+        ))
         append_history(history_in_tmp, Outcome(
             candidate_id=c.id, round_id=rid, target="student_v2",
             status="success", metrics={"combined": 0.86, "recall_1": 0.90,

@@ -22,7 +22,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from research_loop.candidate import Candidate, read_decisions
+from research_loop.candidate import Candidate, read_decisions, read_outcomes_started
 
 
 class WorkingTreeDivergedError(RuntimeError):
@@ -91,8 +91,20 @@ def load_run_target(run_dir: Path) -> str | None:
     return data.get("target")
 
 
+def round_ids_for_run(history_path: Path, run_id: str) -> set[str]:
+    """Round_ids belonging to a single autoreason run.
+
+    Decisions don't carry run_id directly; we infer it via outcome_started
+    records (which do carry run_id) → round_id mapping. A round whose pass
+    crashed before any candidate began training is excluded — but no decision
+    will exist for it either, so the streak math is unaffected.
+    """
+    return {s.round_id for s in read_outcomes_started(history_path, run_id=run_id)}
+
+
 def compute_consecutive_a_wins(
     history_path: Path, target: str, convergence: int,
+    run_id: str | None = None,
 ) -> int:
     """Count trailing A wins in this target's decision stream (capped at convergence).
 
@@ -100,8 +112,17 @@ def compute_consecutive_a_wins(
     until a non-A decision (or the start of history) is reached. Capped at
     `convergence` so resume cannot trigger convergence twice with the same
     decisions.
+
+    When `run_id` is provided, the streak is scoped to decisions that belong
+    to this run (via outcome_started → round_id mapping). Without this scope,
+    a target's decisions from prior runs would pollute the counter — a fresh
+    resume of a target that previously converged would see "consecutive_a_wins
+    = convergence" immediately and exit without running anything.
     """
     decisions = [d for d in read_decisions(history_path) if d.target == target]
+    if run_id is not None:
+        rids = round_ids_for_run(history_path, run_id)
+        decisions = [d for d in decisions if d.round_id in rids]
     if not decisions:
         return 0
     streak = 0
@@ -113,6 +134,17 @@ def compute_consecutive_a_wins(
         else:
             break
     return streak
+
+
+def count_decisions_for_run(
+    history_path: Path, target: str, run_id: str,
+) -> int:
+    """Number of completed decisions belonging to this run (target-scoped)."""
+    rids = round_ids_for_run(history_path, run_id)
+    return sum(
+        1 for d in read_decisions(history_path)
+        if d.target == target and d.round_id in rids
+    )
 
 
 # ---------------------------------------------------------------------------

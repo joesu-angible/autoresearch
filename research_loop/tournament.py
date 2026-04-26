@@ -684,7 +684,11 @@ def cmd_autoreason(
     start_pass = 1
     if resume:
         from research_loop.candidate import find_unfinished_candidates, read_decisions
-        from research_loop.resume import compute_consecutive_a_wins, recover_working_tree
+        from research_loop.resume import (
+            compute_consecutive_a_wins,
+            count_decisions_for_run,
+            recover_working_tree,
+        )
 
         unfinished = find_unfinished_candidates(HISTORY_PATH, run_id=run_id)
         print(f"  resume: {len(unfinished)} unfinished candidate(s) detected")
@@ -757,9 +761,14 @@ def cmd_autoreason(
                     _close_narrative_log()
                     return rc
 
-        # Restore convergence counter from completed decisions.
-        consecutive_a_wins = compute_consecutive_a_wins(HISTORY_PATH, target, convergence)
-        n_decisions = sum(1 for _ in read_decisions(HISTORY_PATH) if _.target == target)
+        # Restore convergence counter from THIS RUN'S completed decisions only.
+        # Without scoping by run_id, prior runs' decisions for this target would
+        # pollute the counter — a fresh resume of a target whose previous run
+        # converged would see "already converged" and exit without doing anything.
+        consecutive_a_wins = compute_consecutive_a_wins(
+            HISTORY_PATH, target, convergence, run_id=run_id,
+        )
+        n_decisions = count_decisions_for_run(HISTORY_PATH, target, run_id)
         start_pass = n_decisions + 1
         print(f"  resume: continuing from pass {start_pass}/{max_passes} "
               f"(consecutive A wins: {consecutive_a_wins}/{convergence})")

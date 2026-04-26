@@ -69,21 +69,51 @@ LORA_DROPOUT = 0.05
 LORA_TARGET_MODULES = ["q_proj", "v_proj"]
 
 # -- Optimization --
-def _auto_batch(default_at_24gb: int) -> int:
-    """Scale BATCH_SIZE linearly with available VRAM (baseline = 24GB / RTX 4090).
+def _auto_batch(default_at_24gb: int, vram_gb: float | None = None) -> int:
+    """Choose a physical DINO V2 batch size from detected GPU VRAM.
 
-    Override via env var: `BATCH_SIZE=64 python train_dino_v2.py`.
+    The old linear 24GB→8 scaling returned only ~31 on 96GB GPUs. That is
+    overly conservative for this trainer because DINOv3 is frozen except LoRA,
+    activations are bf16, and gradient checkpointing is enabled. Keep the 24GB
+    baseline safe, but step up aggressively on high-memory cards.
+
+    Override via env var: `BATCH_SIZE=128 python train_dino_v2.py`.
     Falls back to baseline default on CPU-only systems.
     """
-    import torch as _torch
-    if not _torch.cuda.is_available():
-        return default_at_24gb
-    vram_gb = _torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-    return max(1, int(default_at_24gb * (vram_gb / 24.0)))
+    if vram_gb is None:
+        import torch as _torch
+        if not _torch.cuda.is_available():
+            return default_at_24gb
+        vram_gb = _torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+
+    if vram_gb >= 80.0:
+        return 128
+    if vram_gb >= 48.0:
+        return 64
+    if vram_gb >= 32.0:
+        return 32
+    return default_at_24gb
 
 
-# Effective batch = BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS = 128 (preserved
-# across hardware tiers). Override either via env vars to tune independently.
+def _auto_num_workers(cpu_count: int | None = None) -> int:
+    """Choose DataLoader workers from CPU capacity.
+
+    Image decode + two-view augmentation can bottleneck DINO V2. Scale above the
+    legacy 4 workers on large hosts, while capping at 16 to avoid excessive
+    process fan-out and memory pressure. Override via `NUM_WORKERS=...`.
+    """
+    if cpu_count is None:
+        cpu_count = os.cpu_count() or 4
+    if cpu_count >= 24:
+        return 16
+    if cpu_count >= 12:
+        return 8
+    return 4
+
+
+# Effective batch = BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS is kept near 128 by
+# default for optimizer behavior, but large cards can now use one physical step.
+# Override either via env vars to tune independently.
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE") or _auto_batch(8))
 GRADIENT_ACCUMULATION_STEPS = int(os.environ.get("GRADIENT_ACCUMULATION_STEPS") or max(1, 128 // BATCH_SIZE))
 LR = 5e-4
@@ -142,7 +172,7 @@ EARLY_STOP_PATIENCE = 10
 EARLY_STOP_RECALL_DROP = 0.15
 EARLY_STOP_COLLAPSE_CONSECUTIVE = 3
 
-NUM_WORKERS = 4
+NUM_WORKERS = int(os.environ.get("NUM_WORKERS") or _auto_num_workers())
 DEVICE = "cuda"
 
 # -- Sentinel labels for unlabeled sources --
@@ -765,6 +795,12 @@ def main():
         f"StrongAug={USE_STRONG_AUG} "
         f"BaseAnchor={USE_BASE_ANCHOR}(w={BASE_ANCHOR_WEIGHT})"
     )
+    logger.info(
+        f"Throughput config: BATCH_SIZE={BATCH_SIZE} "
+        f"GRADIENT_ACCUMULATION_STEPS={GRADIENT_ACCUMULATION_STEPS} "
+        f"effective_batch={BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS} "
+        f"NUM_WORKERS={NUM_WORKERS}"
+    )
 
     # -- Load base model --
     base_model = load_base_model(DEVICE)
@@ -802,13 +838,20 @@ def main():
     val_dataset, _ = build_dataset(VAL_DIR, processor, split="val")
 
     train_collate = collate_two_views if USE_SSL_CONSISTENCY else collate_fn
+    loader_kwargs = {
+        "num_workers": NUM_WORKERS,
+        "pin_memory": True,
+        "persistent_workers": NUM_WORKERS > 0,
+    }
+    if NUM_WORKERS > 0:
+        loader_kwargs["prefetch_factor"] = 4
     train_loader = DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True,
-        num_workers=NUM_WORKERS, pin_memory=True, collate_fn=train_collate,
+        collate_fn=train_collate, **loader_kwargs,
     )
     val_loader = DataLoader(
         val_dataset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False,
-        num_workers=NUM_WORKERS, pin_memory=True, collate_fn=collate_fn,
+        collate_fn=collate_fn, **loader_kwargs,
     )
 
     # -- ArcFace head --

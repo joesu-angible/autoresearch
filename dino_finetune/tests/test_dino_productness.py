@@ -29,7 +29,23 @@ from train_dino_v2 import (  # noqa: E402
     PRODUCTNESS_LABEL_SMOOTHING_POS,
     PRODUCTNESS_LABEL_SMOOTHING_NEG,
     PRODUCTNESS_FOCAL_GAMMA,
+    _auto_batch,
+    _auto_num_workers,
 )
+
+
+def test_auto_batch_uses_large_96gb_gpu_capacity():
+    """RTX PRO 6000 96GB should not inherit the old 24GB-safe batch=31."""
+    assert _auto_batch(default_at_24gb=8, vram_gb=95.0) == 128
+
+
+def test_auto_batch_keeps_24gb_baseline_safe():
+    assert _auto_batch(default_at_24gb=8, vram_gb=24.0) == 8
+
+
+def test_auto_num_workers_scales_above_legacy_four_workers():
+    assert _auto_num_workers(cpu_count=32) == 16
+    assert _auto_num_workers(cpu_count=8) == 4
 
 
 def test_target_derivation_negative_label_is_zero():

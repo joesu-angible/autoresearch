@@ -69,8 +69,23 @@ LORA_DROPOUT = 0.05
 LORA_TARGET_MODULES = ["q_proj", "v_proj"]
 
 # -- Optimization --
-BATCH_SIZE = 8
-GRADIENT_ACCUMULATION_STEPS = 16
+def _auto_batch(default_at_24gb: int) -> int:
+    """Scale BATCH_SIZE linearly with available VRAM (baseline = 24GB / RTX 4090).
+
+    Override via env var: `BATCH_SIZE=64 python train_dino_v2.py`.
+    Falls back to baseline default on CPU-only systems.
+    """
+    import torch as _torch
+    if not _torch.cuda.is_available():
+        return default_at_24gb
+    vram_gb = _torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+    return max(1, int(default_at_24gb * (vram_gb / 24.0)))
+
+
+# Effective batch = BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS = 128 (preserved
+# across hardware tiers). Override either via env vars to tune independently.
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE") or _auto_batch(8))
+GRADIENT_ACCUMULATION_STEPS = int(os.environ.get("GRADIENT_ACCUMULATION_STEPS") or max(1, 128 // BATCH_SIZE))
 LR = 5e-4
 WEIGHT_DECAY = 0.01
 WARMUP_RATIO = 0.2

@@ -75,8 +75,24 @@ from train import (
 # V2 CONFIGURATION
 # ============================================================
 MODEL_NAME = "hf-hub:timm/lcnet_050.ra2_in1k"
-BATCH_SIZE = 64
-ARCFACE_BATCH_SIZE = 256
+
+
+def _auto_batch(default_at_24gb: int) -> int:
+    """Scale batch size linearly with available VRAM, baseline = 24GB (RTX 4090).
+
+    Override via env var (e.g. `BATCH_SIZE=128 python train_v2.py`).
+    Falls back to baseline default on CPU-only systems.
+    """
+    import os
+    import torch
+    if not torch.cuda.is_available():
+        return default_at_24gb
+    vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+    return max(1, int(default_at_24gb * (vram_gb / 24.0)))
+
+
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE") or _auto_batch(64))
+ARCFACE_BATCH_SIZE = int(os.environ.get("ARCFACE_BATCH_SIZE") or _auto_batch(256))
 LR = 8e-3
 WEIGHT_DECAY = 1e-3
 NUM_WORKERS = 16

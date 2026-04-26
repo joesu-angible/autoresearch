@@ -699,6 +699,27 @@ def cmd_autoreason(
                 print(f"  resume: re-running {cand.kind} ({cand.id}) from round {cand.round_id}")
                 adapter = TARGETS[target]()
                 adapter.apply_patch(cand)
+
+                # Mid-apply guard mirrors the main loop's behavior: a malformed
+                # diff written by the LLM does not get retried forever — record
+                # status=failed and move on. Without this, resume would re-trigger
+                # the same `git apply` failure every time the operator restarts.
+                if cand.kind != "A" and cand.patch.strip():
+                    check = subprocess.run(
+                        ["git", "apply", "--check"], input=cand.patch,
+                        cwd=REPO_ROOT, capture_output=True, text=True, check=False,
+                    )
+                    if check.returncode != 0:
+                        err = check.stderr.strip().splitlines()[-1] if check.stderr.strip() else "git apply --check failed"
+                        print(f"    resume: apply rejected for {cand.kind} ({err}) → status=failed")
+                        append_history(HISTORY_PATH, Outcome(
+                            candidate_id=cand.id, round_id=cand.round_id, target=target,
+                            status="failed", metrics={},
+                            elapsed_seconds=0.0, log_path="",
+                            metrics_json_path="",
+                        ))
+                        continue
+
                 append_history(HISTORY_PATH, OutcomeStartedRecord(
                     candidate_id=cand.id, round_id=cand.round_id, target=target,
                     pass_index=0, kind=cand.kind, run_id=run_id,

@@ -29,9 +29,14 @@ from train_dino_v2 import (  # noqa: E402
     PRODUCTNESS_LABEL_SMOOTHING_POS,
     PRODUCTNESS_LABEL_SMOOTHING_NEG,
     PRODUCTNESS_FOCAL_GAMMA,
+    USE_GRADIENT_CHECKPOINTING,
     _auto_batch,
     _auto_num_workers,
 )
+
+
+def test_gradient_checkpointing_disabled_by_default_on_large_vram_hosts():
+    assert USE_GRADIENT_CHECKPOINTING is False
 
 
 def test_auto_batch_uses_large_96gb_gpu_capacity():

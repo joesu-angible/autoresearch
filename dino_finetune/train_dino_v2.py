@@ -74,8 +74,8 @@ def _auto_batch(default_at_24gb: int, vram_gb: float | None = None) -> int:
 
     The old linear 24GB→8 scaling returned only ~31 on 96GB GPUs. That was
     overly conservative with checkpointing enabled, but full activation storage
-    can OOM at batch 128 on 96GB when checkpointing is disabled. Keep high-VRAM
-    hosts at batch 64 by default; override `BATCH_SIZE` for manual sweeps.
+    can OOM at batch 64+ on 96GB when checkpointing is disabled. Keep high-VRAM
+    hosts at batch 32 by default; override `BATCH_SIZE` for manual sweeps.
 
     Override via env var: `BATCH_SIZE=128 python train_dino_v2.py`.
     Falls back to baseline default on CPU-only systems.
@@ -87,9 +87,9 @@ def _auto_batch(default_at_24gb: int, vram_gb: float | None = None) -> int:
         vram_gb = _torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
 
     if vram_gb >= 80.0:
-        return 64
+        return 32
     if vram_gb >= 48.0:
-        return 64
+        return 32
     if vram_gb >= 32.0:
         return 32
     return default_at_24gb

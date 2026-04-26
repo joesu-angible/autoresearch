@@ -226,13 +226,26 @@ def test_is_deployable_pos_acc_too_low():
     assert any("pos_acc" in reason for reason in verdict.reasons)
 
 
-def test_is_deployable_missing_productness_fails():
-    """A V1-style result without productness cannot be deployed under V2 rules."""
-    r = CandidateResult("v1", "A", combined=0.88, recall_1=0.92, mean_cosine=0.84)
+def test_is_deployable_missing_productness_passes_when_combined_meets_bar():
+    """Productness checks are *conditional*: a model trained without the
+    CLS branch (USE_PRODUCTNESS_CLS=False) has no productness fields and
+    must still be deployable when combined clears the bar. The deploy gate
+    cannot block a productness-disabled pipeline solely for missing fields."""
+    r = CandidateResult("no-cls", "A", combined=0.88, recall_1=0.92, mean_cosine=0.84)
+    verdict = is_deployable(r)
+    assert verdict.deployable is True
+    assert verdict.reasons == ()
+
+
+def test_is_deployable_missing_productness_still_fails_on_combined():
+    """Sanity: if combined is below threshold, the gate still blocks even
+    without productness fields."""
+    r = CandidateResult("no-cls-low", "A", combined=0.50, recall_1=0.50, mean_cosine=0.40)
     verdict = is_deployable(r)
     assert verdict.deployable is False
-    assert any("pos_acc" in reason for reason in verdict.reasons)
-    assert any("neg_acc" in reason for reason in verdict.reasons)
+    assert any("combined" in reason for reason in verdict.reasons)
+    # No productness reasons since fields were absent
+    assert not any("pos_acc" in reason or "neg_acc" in reason for reason in verdict.reasons)
 
 
 def test_is_deployable_collects_all_failures():

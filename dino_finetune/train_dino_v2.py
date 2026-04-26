@@ -102,7 +102,12 @@ BASE_ANCHOR_WEIGHT = 0.1
 # learn productness so its embedding space is product-aware before distillation.
 # Target derivation is cleaner here than student: label == NEGATIVE_LABEL → 0.0,
 # anything else (real class id or COMMODITY_LABEL) → 1.0. No path-string match.
-USE_PRODUCTNESS_CLS = True
+# OFF by default per algo-lead direction (2026-04-26). Opt-in via CLI
+# `--productness` or env `USE_PRODUCTNESS_CLS=1`.
+USE_PRODUCTNESS_CLS = (
+    os.environ.get("USE_PRODUCTNESS_CLS", "0").lower()
+    in ("1", "true", "yes", "on")
+)
 PRODUCTNESS_CLS_WEIGHT = 0.02
 PRODUCTNESS_HEAD_HIDDEN = 256
 PRODUCTNESS_LABEL_SMOOTHING_POS = 0.05
@@ -994,10 +999,20 @@ if __name__ == "__main__":
         "--max-epochs", type=int, default=None,
         help=f"Override module-level EPOCHS (default {EPOCHS})",
     )
+    parser.add_argument(
+        "--productness",
+        action=argparse.BooleanOptionalAction, default=None,
+        help="Toggle productness CLS branch (use --productness or --no-productness). "
+             "Default reads USE_PRODUCTNESS_CLS env var (default ON). "
+             "CLI flag overrides env.",
+    )
     args = parser.parse_args()
     if args.max_epochs is not None:
         EPOCHS = args.max_epochs  # noqa: F811 — module-level rebind for tournament use
         logger.info(f"EPOCHS overridden via CLI: {EPOCHS}")
+    if args.productness is not None:
+        USE_PRODUCTNESS_CLS = args.productness  # noqa: F811
+        logger.info(f"USE_PRODUCTNESS_CLS overridden via CLI: {USE_PRODUCTNESS_CLS}")
 
     try:
         main()

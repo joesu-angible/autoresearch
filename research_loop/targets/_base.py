@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import os
 import subprocess
 import sys
 import time
@@ -111,6 +112,16 @@ class TargetAdapter:
         cmd = [sys.executable if c == "python" else c for c in self.TRAIN_CMD]
         cmd += ["--max-epochs", str(epochs)]
 
+        env = os.environ.copy()
+        if max_seconds is not None:
+            # Give the trainer an internal graceful deadline before the outer
+            # subprocess timeout. This lets long-running candidates stop,
+            # evaluate, and write metrics_final_v2.json instead of being killed
+            # as unusable timeouts.
+            eval_grace = min(600.0, max(120.0, max_seconds * 0.15))
+            graceful_budget = max(1, int(max_seconds - eval_grace))
+            env.setdefault("MAX_TRAINING_SECONDS", str(graceful_budget))
+
         if dry_run:
             return TrainOutcome(
                 candidate_id=candidate.id,
@@ -131,6 +142,7 @@ class TargetAdapter:
             proc = subprocess.Popen(
                 cmd, cwd=self.REPO_DIR,
                 stdout=logf, stderr=subprocess.STDOUT,
+                env=env,
             )
             try:
                 proc.wait(timeout=max_seconds)

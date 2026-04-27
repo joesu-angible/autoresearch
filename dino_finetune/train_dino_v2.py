@@ -162,7 +162,7 @@ SEED = 42
 USE_GRADIENT_CHECKPOINTING = False
 EVAL_EVERY_N_EPOCHS = 1
 MAX_STEPS_PER_EPOCH = 0
-MAX_TRAINING_SECONDS = 0
+MAX_TRAINING_SECONDS = int(os.environ.get("MAX_TRAINING_SECONDS", "0"))
 
 # -- Early stopping --
 EARLY_STOP_COSINE_THRESHOLD = 0.95
@@ -614,6 +614,7 @@ def train_one_epoch(
     arcface_head: "ArcFaceHead | None" = None,
     base_model=None,
     productness_head: "DinoProductnessHead | None" = None,
+    deadline: float | None = None,
 ) -> dict:
     """Two-view forward for SSL + main InfoNCE + optional ArcFace + optional base anchor."""
     model.train()
@@ -637,6 +638,9 @@ def train_one_epoch(
         effective_steps = min(len(train_loader), MAX_STEPS_PER_EPOCH)
 
     for step, batch in enumerate(train_loader):
+        if deadline is not None and time.time() >= deadline:
+            logger.info(f"Time budget reached during epoch {epoch} at step {step}; stopping for eval")
+            break
         if MAX_STEPS_PER_EPOCH > 0 and step >= MAX_STEPS_PER_EPOCH:
             break
 
@@ -907,6 +911,7 @@ def main():
 
     # -- Train --
     start_time = time.time()
+    deadline = start_time + MAX_TRAINING_SECONDS if MAX_TRAINING_SECONDS > 0 else None
     for epoch in range(start_epoch, EPOCHS + 1):
         elapsed = time.time() - start_time
         if MAX_TRAINING_SECONDS > 0 and elapsed >= MAX_TRAINING_SECONDS:
@@ -920,6 +925,7 @@ def main():
             arcface_head=arcface_head,
             base_model=anchor_base,
             productness_head=productness_head,
+            deadline=deadline,
         )
         epoch_time = time.time() - epoch_start
         logger.info(

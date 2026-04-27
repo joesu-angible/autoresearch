@@ -72,6 +72,32 @@ TARGETS: dict[str, type] = {
 # propose
 # ---------------------------------------------------------------------------
 
+def _patch_check_error(diff: str) -> str | None:
+    """Return git-apply error text when an LLM diff is malformed/unapplicable."""
+    if not diff.strip():
+        return None
+    check = subprocess.run(
+        ["git", "apply", "--check"], input=diff,
+        cwd=REPO_ROOT, capture_output=True, text=True, check=False,
+    )
+    if check.returncode == 0:
+        return None
+    return check.stderr.strip().splitlines()[-1] if check.stderr.strip() else "git apply --check failed"
+
+
+def _drop_bad_proposal_diff(label: str, proposal):
+    """Treat malformed LLM diffs as NO_PATCH before creating candidates."""
+    err = _patch_check_error(proposal.diff)
+    if err is None:
+        return proposal
+    print(f"  {label}: generated malformed diff ({err}); treating as NO_PATCH")
+    return type(proposal)(
+        rationale=f"Dropped malformed diff before candidate creation: {err}",
+        diff="",
+        raw=proposal.raw,
+    )
+
+
 def _make_baseline_a(target: str, round_id: str, hypothesis: str) -> Candidate:
     return Candidate(
         kind="A",
@@ -809,12 +835,14 @@ def cmd_autoreason(
             trainer_path=trainer_path,
             critique_text=critique.raw,
         )
+        b_proposal = _drop_bad_proposal_diff("author", b_proposal)
 
         # 3. Synthesizer (sees only patches, anonymized labels)
         ab_synthesis = synthesizer.synthesize(
             patch_x="", patch_y=b_proposal.diff,  # X=A=empty (do-nothing); Y=B
             trainer_path=trainer_path,
         )
+        ab_synthesis = _drop_bad_proposal_diff("synthesizer", ab_synthesis)
 
         # 4. Build A / B / AB Candidate records for this round
         a_candidate = _make_baseline_a(target, round_id, hypothesis_seed)

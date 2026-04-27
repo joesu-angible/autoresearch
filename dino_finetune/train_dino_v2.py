@@ -40,9 +40,9 @@ REID_NEGATIVES_DIR = "/data/training/reid/reid_multiple/negatives"
 # Adapter output. Just `best_adapter` — V2 is the only flavor going forward;
 # the student trainer reads this same path. Cache invalidation is handled by
 # adapter-sha keying in train_v2.py, so overwriting in place is safe.
-ADAPTER_OUTPUT_DIR = "dino_finetune/output/best_adapter"
-LAST_ADAPTER_DIR = "dino_finetune/output/last_adapter"
-CHECKPOINT_PATH = "dino_finetune/output/last_adapter/checkpoint.pt"
+ADAPTER_OUTPUT_DIR = "output/best_adapter"
+LAST_ADAPTER_DIR = "output/last_adapter"
+CHECKPOINT_PATH = "output/last_adapter/checkpoint.pt"
 
 import math
 import os

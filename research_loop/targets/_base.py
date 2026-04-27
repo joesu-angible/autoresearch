@@ -66,6 +66,13 @@ def default_candidate_wall_grace_seconds(max_seconds: float) -> float:
     return min(1800.0, max(600.0, max_seconds * 0.25))
 
 
+def default_log_root(repo_dir: Path) -> Path:
+    if "AUTORESEARCH_LOG_ROOT" in os.environ:
+        return Path(os.environ["AUTORESEARCH_LOG_ROOT"])
+    # Target REPO_DIR is usually <repo>/<module>; keep logs at <repo>/logs.
+    return Path(repo_dir).resolve().parent / "logs"
+
+
 class TargetAdapter:
     """Base class. Subclasses set REPO_DIR, RESULTS_TSV, METRICS_JSON, TRAIN_CMD."""
 
@@ -118,6 +125,11 @@ class TargetAdapter:
         cmd += ["--max-epochs", str(epochs)]
 
         env = os.environ.copy()
+        # Tournament candidates must be state-isolated. Shared trainer checkpoints
+        # such as output/last_adapter can contain optimizer groups from a prior
+        # candidate patch (e.g. optional heads) and corrupt A/B/AB comparison.
+        env["RESUME_LAST_CHECKPOINT"] = "0"
+        env["RESUME_TRAINING"] = "0"
         subprocess_timeout = max_seconds
         if max_seconds is not None:
             # max_seconds is the trainer's internal train-step budget, not the
@@ -142,8 +154,13 @@ class TargetAdapter:
                 return_code=0,
             )
 
-        log_path = log_path or (self.REPO_DIR / f"run_round_{candidate.round_id}_{candidate.id}.log")
+        log_path = log_path or (default_log_root(self.REPO_DIR) / self.name / "candidates" / f"run_round_{candidate.round_id}_{candidate.id}.log")
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        for stale_metrics_path in (self.METRICS_JSON, self.METRICS_PROGRESS_JSON):
+            try:
+                stale_metrics_path.unlink()
+            except FileNotFoundError:
+                pass
 
         t0 = time.time()
         timed_out = False

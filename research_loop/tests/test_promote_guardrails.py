@@ -70,6 +70,22 @@ def test_a_wins_on_noise_band_tie():
     decision = decide([a, b])
     assert decision.winner_kind == "A"
     assert decision.promote is False
+    assert "within noise band" in decision.reason
+    assert "no challengers" not in decision.reason
+
+
+def test_a_wins_with_clear_reason_when_all_challengers_failed():
+    a = _a(combined=0.860)
+    b = CandidateResult(
+        candidate_id="b-failed", kind="B",
+        combined=0.99, recall_1=0.99, mean_cosine=0.99,
+        status="failed: traceback",
+    )
+    decision = decide([a, b])
+    assert decision.winner_kind == "A"
+    assert "challenger" in decision.reason
+    assert "failed" in decision.reason
+    assert "no challengers" not in decision.reason
 
 
 def test_b_wins_on_clear_improvement():

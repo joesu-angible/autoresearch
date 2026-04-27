@@ -468,9 +468,15 @@ def test_autoreason_writes_narrative_log_to_run_dir(history_in_tmp, fake_repo, m
     )
 
     run_dirs = [d for d in (tmp_path / "runs").iterdir() if d.is_dir()]
-    log_path = run_dirs[0] / "autoreason.log"
+    legacy_log_path = run_dirs[0] / "autoreason.log"
+    assert legacy_log_path.exists()
+    import json
+    summary = json.loads((run_dirs[0] / "summary.json").read_text())
+    log_path = Path(summary["log_path"])
+    assert list(log_path.parts[-4:]) == ["logs", "research_loop", "runs", run_dirs[0].name, "autoreason.log"][-4:]
     assert log_path.exists()
     content = log_path.read_text()
+    assert legacy_log_path.read_text() == content
     # Narrative milestones should be captured
     assert "autoreason pass 1/1" in content
     assert "critic:" in content

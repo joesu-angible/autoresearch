@@ -163,6 +163,10 @@ USE_GRADIENT_CHECKPOINTING = False
 EVAL_EVERY_N_EPOCHS = 1
 MAX_STEPS_PER_EPOCH = 0
 MAX_TRAINING_SECONDS = int(os.environ.get("MAX_TRAINING_SECONDS", "0"))
+RESUME_LAST_CHECKPOINT = (
+    os.environ.get("RESUME_LAST_CHECKPOINT", "0").lower()
+    in ("1", "true", "yes", "on")
+)
 
 # -- Early stopping --
 EARLY_STOP_COSINE_THRESHOLD = 0.95
@@ -815,8 +819,10 @@ def main():
     base_model = load_base_model(DEVICE)
 
     # -- Resume or fresh LoRA --
-    has_adapter = os.path.exists(os.path.join(LAST_ADAPTER_DIR, "adapter_model.safetensors"))
-    has_checkpoint = os.path.exists(CHECKPOINT_PATH)
+    has_adapter = RESUME_LAST_CHECKPOINT and os.path.exists(os.path.join(LAST_ADAPTER_DIR, "adapter_model.safetensors"))
+    has_checkpoint = RESUME_LAST_CHECKPOINT and os.path.exists(CHECKPOINT_PATH)
+    if not RESUME_LAST_CHECKPOINT and os.path.exists(os.path.join(LAST_ADAPTER_DIR, "adapter_model.safetensors")):
+        logger.info(f"Ignoring saved adapter at {LAST_ADAPTER_DIR}; starting fresh candidate")
 
     if has_adapter:
         from peft import PeftModel

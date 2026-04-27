@@ -21,7 +21,26 @@ def test_parse_minimal_required_keys(tmp_path: Path):
     assert out["combined"] == 0.86
     assert out["recall_1"] == 0.90
     assert out["mean_cosine"] == 0.81
-    assert out["recall_5"] == 0.0  # missing → default
+    assert out["recall_5"] == 0.90  # missing → recall@1 fallback
+
+
+def test_parse_recall_at_5_none_falls_back_to_recall_at_1(tmp_path: Path):
+    p = tmp_path / "metrics_final_v2.json"
+    _write(p, {
+        "combined_metric": 0.86,
+        "recall_at_1": 0.90,
+        "recall_at_5": None,
+        "mean_cosine": 0.81,
+    })
+    out = parse_metrics(p)
+    assert out["recall_5"] == 0.90
+
+
+def test_parse_non_success_metrics_reports_clear_error(tmp_path: Path):
+    p = tmp_path / "metrics_final_v2.json"
+    _write(p, {"status": "failed", "error_type": "KeyError", "error": "recall@5"})
+    with pytest.raises(ValueError, match="reports non-success status: failed.*recall@5"):
+        parse_metrics(p)
 
 
 def test_parse_passes_through_productness_keys(tmp_path: Path):

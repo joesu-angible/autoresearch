@@ -35,6 +35,7 @@ student_finetune/productness_val_paths.txt
 research_loop/history.jsonl
 research_loop/tournament_results_v2.tsv
 research_loop/runs/
+logs/
 
 # Local-only / not for shared history:
 #   .claude/           — per-machine Claude Code config + scheduled-task locks

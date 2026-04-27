@@ -373,6 +373,19 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNS_DIR = Path(__file__).resolve().parent / "runs"
 
 
+def _log_root() -> Path:
+    if "AUTORESEARCH_LOG_ROOT" in os.environ:
+        return Path(os.environ["AUTORESEARCH_LOG_ROOT"])
+    default_runs_dir = Path(__file__).resolve().parent / "runs"
+    if RUNS_DIR == default_runs_dir:
+        return REPO_ROOT / "logs"
+    return RUNS_DIR.parent / "logs"
+
+
+def _module_log_path(module: str, *parts: str) -> Path:
+    return _log_root() / module / Path(*parts)
+
+
 def _new_run_id() -> str:
     """Sortable run id for the run directory."""
     import time
@@ -423,6 +436,7 @@ def _write_run_summary(
     latest_critique_summary: str,
     status: str,
     config: dict | None = None,
+    log_path: str | None = None,
 ) -> None:
     """Atomic JSON dump consumed by `tournament status`, external bots,
     and resume (issue #14).
@@ -455,6 +469,7 @@ def _write_run_summary(
         "latest_critique_summary": latest_critique_summary,
         "status": status,
         "config": existing_config if existing_config is not None else config,
+        "log_path": log_path,
     }
     run_dir.mkdir(parents=True, exist_ok=True)
     tmp = summary.with_suffix(".json.tmp")
@@ -656,15 +671,20 @@ def cmd_autoreason(
     # Write PID file for `tournament status` to detect alive vs exited
     (run_dir / "autoreason.pid").write_text(str(os.getpid()))
 
-    narrative_log_path = run_dir / "autoreason.log"
+    narrative_log_path = _module_log_path("research_loop", "runs", run_id, "autoreason.log")
+    narrative_log_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_narrative_log_path = run_dir / "autoreason.log"
     _log_fh = open(narrative_log_path, "a", buffering=1)
+    _legacy_log_fh = open(legacy_narrative_log_path, "a", buffering=1)
     _orig_stdout, _orig_stderr = sys.stdout, sys.stderr
-    sys.stdout = _Tee(_orig_stdout, _log_fh)
-    sys.stderr = _Tee(_orig_stderr, _log_fh)
+    _mirrored_log = _Tee(_log_fh, _legacy_log_fh)
+    sys.stdout = _Tee(_orig_stdout, _mirrored_log)
+    sys.stderr = _Tee(_orig_stderr, _mirrored_log)
 
     def _close_narrative_log() -> None:
         sys.stdout, sys.stderr = _orig_stdout, _orig_stderr
         _log_fh.close()
+        _legacy_log_fh.close()
 
     # Config block persisted on first summary write; resume reads it back to
     # restore the invocation when picking up after a crash (issue #14).
@@ -696,7 +716,7 @@ def cmd_autoreason(
             consecutive_a_wins=consecutive_a_wins, convergence=convergence,
             last_decision=last_decision_dict, best_so_far=best,
             latest_critique_summary=latest_critique, status=status,
-            config=run_config,
+            config=run_config, log_path=str(narrative_log_path),
         )
 
     consecutive_a_wins = 0

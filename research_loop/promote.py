@@ -97,21 +97,32 @@ def decide(results: list[CandidateResult]) -> Decision:
 
     challengers = [r for r in results if r.kind != "A"]
     best = a
-    best_reason = "no challengers; incumbent A wins by default"
+    best_rejected: tuple[CandidateResult, str, float] | None = None
+
+    def _remember_rejection(c: CandidateResult, reason: str, delta: float) -> None:
+        nonlocal best_rejected
+        if best_rejected is None or c.combined > best_rejected[0].combined:
+            best_rejected = (c, reason, delta)
 
     for c in challengers:
+        delta = c.combined - a.combined
         if c.status != "success":
+            _remember_rejection(c, f"status={c.status}", delta)
             continue  # vetoed: timeout / failed candidates cannot be promoted
         if not c.has_rollback:
+            _remember_rejection(c, "missing rollback", delta)
             continue  # vetoed: non-A without rollback
-        delta = c.combined - a.combined
         if is_noise_band(delta):
+            _remember_rejection(c, f"within noise band Δcombined={delta:+.4f} <= {NOISE_BAND:.4f}", delta)
             continue  # within noise → A wins
         if delta < 0:
+            _remember_rejection(c, f"combined regressed Δcombined={delta:+.4f}", delta)
             continue  # regressed
         if regresses_recall(a.recall_1, c.recall_1):
+            _remember_rejection(c, f"recall@1 regressed {c.recall_1:.4f} vs A={a.recall_1:.4f}", delta)
             continue  # combined up but recall@1 down
         if regresses_productness_neg_acc(a.productness_neg_acc, c.productness_neg_acc):
+            _remember_rejection(c, f"productness_neg_acc regressed {c.productness_neg_acc:.4f} vs A={a.productness_neg_acc:.4f}", delta)
             continue  # combined up but personal-item rejection regressed
         if c.combined > best.combined:
             best = c
@@ -128,7 +139,14 @@ def decide(results: list[CandidateResult]) -> Decision:
     return Decision(
         winner_id=best.candidate_id,
         winner_kind=best.kind,
-        reason=best_reason,
+        reason=(
+            best_reason if best.kind != "A" else (
+                "no challengers; incumbent A wins by default"
+                if not challengers else
+                f"incumbent A retained; best challenger {best_rejected[0].kind} "
+                f"({best_rejected[0].candidate_id}) rejected: {best_rejected[1]}"
+            )
+        ),
         promote=best.kind != "A",
     )
 

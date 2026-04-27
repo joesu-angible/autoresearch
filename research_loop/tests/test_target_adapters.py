@@ -12,6 +12,7 @@ from research_loop.targets._base import (
     V1_FORBIDDEN_PATHS,
     assert_no_v1_writes,
     assert_v2_log_path,
+    TargetAdapter,
 )
 
 
@@ -101,3 +102,39 @@ def test_train_dry_run_does_not_execute():
     assert outcome.status == "noop"
     assert outcome.metrics == {}
     assert outcome.return_code == 0
+
+
+def test_target_train_logs_under_module_log_directory_and_disables_resume(tmp_path):
+    trainer = tmp_path / "fake_train.py"
+    trainer.write_text(
+        "import json, os\n"
+        "from pathlib import Path\n"
+        "Path('env.json').write_text(json.dumps({\n"
+        "    'resume_last_checkpoint': os.environ.get('RESUME_LAST_CHECKPOINT'),\n"
+        "    'resume_training': os.environ.get('RESUME_TRAINING'),\n"
+        "}))\n"
+        "Path('metrics_final_v2.json').write_text(json.dumps({\n"
+        "    'combined_metric': 0.7, 'recall_at_1': 0.8, 'mean_cosine': 0.6\n"
+        "}))\n"
+    )
+
+    class StubAdapter(TargetAdapter):
+        name = "stub_v2"
+        REPO_DIR = tmp_path
+        RESULTS_TSV = tmp_path / "results_v2.tsv"
+        METRICS_JSON = tmp_path / "metrics_final_v2.json"
+        TRAIN_CMD = ["python", str(trainer)]
+        DEFAULT_EPOCHS = 1
+
+    candidate = Candidate(
+        kind="A", target="stub_v2", round_id="r-logs",
+        hypothesis="candidate", expected_metric="0",
+        changed_files=[], risks=[], rollback="N/A", patch="",
+    )
+    outcome = StubAdapter().train(candidate, max_epochs=1)
+
+    assert outcome.status == "success"
+    assert list(outcome.log_path.parts[-4:]) == ["logs", "stub_v2", "candidates", "run_round_r-logs_" + candidate.id + ".log"]
+    env = __import__("json").loads((tmp_path / "env.json").read_text())
+    assert env["resume_last_checkpoint"] == "0"
+    assert env["resume_training"] == "0"

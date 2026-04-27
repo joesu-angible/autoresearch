@@ -838,6 +838,8 @@ def cmd_autoreason(
             critique_text=critique.raw,
         )
         b_proposal = _drop_bad_proposal_diff("author", b_proposal)
+        if not b_proposal.diff:
+            print(f"  author: no file changes ({b_proposal.rationale[:160]})")
 
         # 3. Synthesizer (sees only patches, anonymized labels)
         ab_synthesis = synthesize_diff_in_worktree(
@@ -848,6 +850,8 @@ def cmd_autoreason(
             trainer_path=trainer_path,
         )
         ab_synthesis = _drop_bad_proposal_diff("synthesizer", ab_synthesis)
+        if not ab_synthesis.diff:
+            print(f"  synthesizer: no file changes ({ab_synthesis.rationale[:160]})")
 
         # 4. Build A / B / AB Candidate records for this round
         a_candidate = _make_baseline_a(target, round_id, hypothesis_seed)
@@ -876,21 +880,21 @@ def cmd_autoreason(
             if c is not None:
                 append_history(HISTORY_PATH, c)
 
-        # Audit-trail records for the LLM calls
-        if b_candidate is not None:
-            append_history(HISTORY_PATH, PatchProposalRecord(
-                round_id=round_id, target=target, pass_index=pass_index,
-                candidate_id=b_candidate.id,
-                rationale=b_proposal.rationale, diff=b_proposal.diff,
-                raw=b_proposal.raw,
-            ))
-        if ab_candidate is not None:
-            append_history(HISTORY_PATH, SynthesisRecord(
-                round_id=round_id, target=target, pass_index=pass_index,
-                candidate_id=ab_candidate.id,
-                rationale=ab_synthesis.rationale, diff=ab_synthesis.diff,
-                raw=ab_synthesis.raw,
-            ))
+        # Audit-trail records for the LLM calls. Empty-diff proposals are
+        # recorded with candidate_id="" so no-change author/synthesizer behavior
+        # is visible instead of silently collapsing to an A-only round.
+        append_history(HISTORY_PATH, PatchProposalRecord(
+            round_id=round_id, target=target, pass_index=pass_index,
+            candidate_id=b_candidate.id if b_candidate is not None else "",
+            rationale=b_proposal.rationale, diff=b_proposal.diff,
+            raw=b_proposal.raw,
+        ))
+        append_history(HISTORY_PATH, SynthesisRecord(
+            round_id=round_id, target=target, pass_index=pass_index,
+            candidate_id=ab_candidate.id if ab_candidate is not None else "",
+            rationale=ab_synthesis.rationale, diff=ab_synthesis.diff,
+            raw=ab_synthesis.raw,
+        ))
 
         # 5. Run A / B / AB. A is do-nothing — we still need its outcome
         # (first pass: real training run; later passes: reuse last A's outcome).
@@ -969,8 +973,11 @@ def cmd_autoreason(
             _close_narrative_log()
             return 1
         decision = decisions[-1]
-        if decision.winner_kind == "A":
+        has_challenger = any(c is not None for c in (b_candidate, ab_candidate))
+        if decision.winner_kind == "A" and has_challenger:
             consecutive_a_wins += 1
+        elif decision.winner_kind == "A":
+            print("  no challenger; A default win does not count toward convergence")
         else:
             consecutive_a_wins = 0
         last_round_id = round_id

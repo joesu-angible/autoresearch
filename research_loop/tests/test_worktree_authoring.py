@@ -18,6 +18,17 @@ class EditingClient:
         return "edited"
 
 
+class NoEditClient:
+    name = "fake-no-editor"
+
+    def __init__(self) -> None:
+        self.calls = []
+
+    def edit_files(self, system: str, user: str, *, workdir: Path, timeout: float | None = None) -> str:
+        self.calls.append((system, user, workdir, timeout))
+        return "No safe trainer change because prior failures look like orchestration noise."
+
+
 def _init_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     trainer = repo / "pkg" / "trainer.py"
@@ -66,3 +77,22 @@ def test_synthesizer_worktree_returns_empty_diff_when_agent_makes_no_changes(tmp
 
     assert proposal.diff == ""
     assert "No file changes" in proposal.rationale
+
+
+def test_author_worktree_no_change_preserves_agent_rationale_and_pushes_safe_experiment(tmp_path):
+    repo = _init_repo(tmp_path)
+    client = NoEditClient()
+
+    proposal = author_diff_in_worktree(
+        client,
+        repo_root=repo,
+        trainer_path="pkg/trainer.py",
+        trainer_source="VALUE = 1\n",
+        critique_text="prior runs failed or timed out",
+    )
+
+    assert proposal.diff == ""
+    assert "No safe trainer change" in proposal.rationale
+    user_prompt = client.calls[0][1]
+    assert "Prior failed/timeout outcomes are orchestration evidence" in user_prompt
+    assert "generate at least one concrete safe trainer experiment" in user_prompt

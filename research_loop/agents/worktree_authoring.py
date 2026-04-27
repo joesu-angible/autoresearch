@@ -140,7 +140,8 @@ Task:
 - Modify ONLY `{trainer_path}`.
 - Address the critic findings conservatively with the smallest useful change.
 - Preserve all V1-protected files.
-- If no safe improvement is warranted, leave files unchanged.
+- Prior failed/timeout outcomes are orchestration evidence, not proof that the trainer has no useful ML experiment left; do not let old execution failures alone justify a no-op.
+- When the critic identifies actionable trainer issues, generate at least one concrete safe trainer experiment. Prefer a tiny hyperparameter/guardrail/checkpoint-state change over no-op. Leave files unchanged only when there is truly no safe trainer-side experiment.
 
 After editing, your final response should be only a short rationale paragraph.
 Autoreason will run `git diff` itself to produce the candidate patch.
@@ -158,7 +159,7 @@ Autoreason will run `git diff` itself to produce the candidate patch.
         _validate_changed_files(files, {trainer_path})
         diff = _git_diff(worktree, [trainer_path]) if files else ""
         return PatchProposal(
-            rationale=_extract_rationale(raw) if diff else "Editing agent made no file changes.",
+            rationale=_extract_rationale(raw),
             diff=diff,
             raw=raw,
         )

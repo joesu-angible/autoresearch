@@ -126,6 +126,23 @@ def _mock_agent_client_factory():
     return make_client
 
 
+def _mock_no_edit_agent_client_factory():
+    """Critic finds issues, but author/synthesizer leave the worktree unchanged."""
+    def make_client(role: str):
+        client = MagicMock()
+        def call_fn(system, user, *, temperature=0.8, max_tokens=None, timeout=None):
+            if "identify concrete problems" in system.lower():
+                return CRITIC_RAW
+            return "No text-diff calls expected for author/synthesizer."
+        def edit_files_fn(system, user, *, workdir, timeout=None):
+            return "No safe trainer change; prior failures appear to be orchestration noise."
+        client.call.side_effect = call_fn
+        client.edit_files.side_effect = edit_files_fn
+        client.name = f"mock-no-edit-{role}"
+        return client
+    return make_client
+
+
 def _patch_adapter_train(scripted_outcomes: list[dict]):
     """Patch StudentV2Target.train() to return scripted TrainOutcomes in order.
 
@@ -189,6 +206,43 @@ def test_autoreason_converges_at_two_consecutive_a_wins(history_in_tmp, fake_rep
     decisions = list(read_decisions(history_in_tmp))
     assert len(decisions) == 2
     assert all(d.winner_kind == "A" for d in decisions)
+
+
+def test_no_challenger_rounds_do_not_count_as_convergence_and_are_audited(
+    history_in_tmp, fake_repo, monkeypatch, tmp_path, capsys
+):
+    metrics = {"combined": 0.86, "recall_1": 0.90, "mean_cosine": 0.81,
+               "productness_neg_acc": 0.85, "productness_pos_acc": 0.99}
+    fake_outcomes = [{"status": "success", "metrics": metrics}] * 3
+
+    from research_loop.targets.student_v2 import StudentV2Target
+    monkeypatch.setattr(StudentV2Target, "train", _patch_adapter_train(fake_outcomes))
+    monkeypatch.setattr(StudentV2Target, "log_row", _stub_log_row)
+    monkeypatch.setattr(StudentV2Target, "METRICS_JSON", fake_repo / "metrics_final_v2.json")
+    monkeypatch.setattr(tournament, "RUNS_DIR", tmp_path / "runs")
+
+    rc = tournament.cmd_autoreason(
+        "student_v2",
+        max_passes=3, convergence=2,
+        max_seconds_per_candidate=None,
+        hypothesis_seed="test", dry_run=False,
+        agent_client_factory=_mock_no_edit_agent_client_factory(),
+    )
+    assert rc == 1  # max passes exhausted; no fake convergence from default A wins
+
+    out = capsys.readouterr().out
+    assert "author: no file changes" in out
+    assert "no challenger; A default win does not count toward convergence" in out
+    decisions = list(read_decisions(history_in_tmp))
+    assert len(decisions) == 3
+    proposals = list(read_patch_proposals(history_in_tmp))
+    assert len(proposals) == 3
+    assert all(p.candidate_id == "" and p.diff == "" for p in proposals)
+    summary_path = next(d for d in (tmp_path / "runs").iterdir() if d.is_dir()) / "summary.json"
+    import json
+    summary = json.loads(summary_path.read_text())
+    assert summary["status"] == "max_passes_exhausted"
+    assert summary["consecutive_a_wins"] == 0
 
 
 def test_autoreason_records_full_audit_trail(history_in_tmp, fake_repo, monkeypatch):

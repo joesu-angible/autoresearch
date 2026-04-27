@@ -806,6 +806,11 @@ def cmd_autoreason(
                     print(f"  resume: promote failed for {rid}", file=sys.stderr)
                     _close_narrative_log()
                     return rc
+                from research_loop.insights import write_round_insight
+                insight_paths = write_round_insight(
+                    HISTORY_PATH, run_dir, run_id=run_id, target=target, round_id=rid,
+                )
+                print(f"  resume: insight: {insight_paths['tsv']}")
 
         # Restore convergence counter from THIS RUN'S completed decisions only.
         # Without scoping by run_id, prior runs' decisions for this target would
@@ -984,6 +989,12 @@ def cmd_autoreason(
             _status_dump(pass_index, "promote_failed", latest_critique_text, last_decision_dict, best_so_far)
             _close_narrative_log()
             return rc
+        from research_loop.insights import write_round_insight
+        insight_paths = write_round_insight(
+            HISTORY_PATH, run_dir, run_id=run_id, target=target, round_id=round_id,
+        )
+        print(f"  insight: {insight_paths['tsv']}")
+        print(f"  round summary: {insight_paths['summary']}")
 
         # 7. Convergence check
         decisions = [d for d in __import__("research_loop.candidate", fromlist=["read_decisions"]).read_decisions(HISTORY_PATH, round_id=round_id)]
@@ -1082,6 +1093,9 @@ def _format_status(summary: dict, *, run_dir: Path, log_path: Path,
     lines.append(f"    narrative: {log_path}")
     lines.append(f"    history:   {HISTORY_PATH} ({history_count} records)")
     lines.append(f"    run dir:   {run_dir}")
+    lines.append("  Insights:")
+    lines.append(f"    ledger:    {run_dir / 'autoreason_results.tsv'}")
+    lines.append(f"    latest:    {run_dir / 'latest_round.md'}")
     return "\n".join(lines)
 
 

@@ -445,6 +445,50 @@ def test_autoreason_writes_summary_json_each_pass(history_in_tmp, fake_repo, mon
     assert pointer.read_text() == run_dirs[0].name
 
 
+def test_autoreason_writes_result_like_insight_files(history_in_tmp, fake_repo, monkeypatch, tmp_path):
+    """Each completed autoreason pass should leave a result-like TSV and a
+    round Markdown report so humans/AI can inspect one artifact instead of
+    reconstructing JSONL history by hand."""
+    a_metrics = {"combined": 0.86, "recall_1": 0.90, "mean_cosine": 0.81,
+                 "productness_neg_acc": 0.85, "productness_pos_acc": 0.99}
+    b_metrics = {"combined": 0.85, "recall_1": 0.89, "mean_cosine": 0.80,
+                 "productness_neg_acc": 0.84, "productness_pos_acc": 0.99}
+    fake_outcomes = [{"status": "success", "metrics": m} for m in [a_metrics, b_metrics, b_metrics]]
+
+    from research_loop.targets.student_v2 import StudentV2Target
+    monkeypatch.setattr(StudentV2Target, "train", _patch_adapter_train(fake_outcomes))
+    monkeypatch.setattr(StudentV2Target, "log_row", _stub_log_row)
+    monkeypatch.setattr(StudentV2Target, "METRICS_JSON", fake_repo / "metrics_final_v2.json")
+    monkeypatch.setattr(tournament, "RUNS_DIR", tmp_path / "runs")
+
+    tournament.cmd_autoreason(
+        "student_v2",
+        max_passes=1, convergence=2,
+        max_seconds_per_candidate=None,
+        hypothesis_seed="test", dry_run=False,
+        agent_client_factory=_mock_agent_client_factory(),
+    )
+
+    run_dir = next(d for d in (tmp_path / "runs").iterdir() if d.is_dir())
+    tsv = run_dir / "autoreason_results.tsv"
+    latest = run_dir / "latest_round.md"
+    assert tsv.exists()
+    lines = tsv.read_text().splitlines()
+    assert lines[0].startswith("run_id\tpass_index\tround_id\ttarget\tkind\tcandidate_id\tstatus")
+    assert len(lines) == 4  # header + A/B/AB rows
+    assert "\tA\t" in lines[1]
+    assert "\tB\t" in lines[2]
+    assert "\tAB\t" in lines[3]
+    assert "Plateau on combined" in lines[1]
+    assert latest.exists()
+    latest_text = latest.read_text()
+    assert "# Autoreason Round Insight" in latest_text
+    assert "Critic" in latest_text
+    assert "Author B" in latest_text
+    assert "Synthesizer AB" in latest_text
+    assert "Winner: A" in latest_text
+
+
 def test_autoreason_writes_narrative_log_to_run_dir(history_in_tmp, fake_repo, monkeypatch, tmp_path):
     """run_dir/autoreason.log captures the narrative print() output. External
     tooling (Hermes, Slack bots) can tail this single file from the path
@@ -553,6 +597,9 @@ def test_status_subcommand_renders_summary(history_in_tmp, fake_repo, monkeypatc
     assert "Best so far:" in out
     assert "combined=0.8600" in out
     assert "Logs:" in out
+    assert "Insights:" in out
+    assert "autoreason_results.tsv" in out
+    assert "latest_round.md" in out
 
 
 def test_status_subcommand_with_no_runs_returns_2(monkeypatch, tmp_path, capsys):

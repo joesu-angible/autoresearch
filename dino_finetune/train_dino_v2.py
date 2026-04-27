@@ -159,7 +159,7 @@ PRODUCTNESS_FOCAL_GAMMA = 2.0
 
 # -- Training --
 SEED = 42
-USE_GRADIENT_CHECKPOINTING = True
+USE_GRADIENT_CHECKPOINTING = False
 EVAL_EVERY_N_EPOCHS = 1
 MAX_STEPS_PER_EPOCH = 0
 MAX_TRAINING_SECONDS = 0
@@ -880,7 +880,7 @@ def main():
         min(len(train_loader), MAX_STEPS_PER_EPOCH) if MAX_STEPS_PER_EPOCH > 0
         else len(train_loader)
     )
-    num_training_steps = (steps_per_epoch // GRADIENT_ACCUMULATION_STEPS) * EPOCHS
+    num_training_steps = math.ceil(steps_per_epoch / GRADIENT_ACCUMULATION_STEPS) * EPOCHS
     scheduler = build_scheduler(optimizer, num_training_steps)
 
     # -- Resume state --

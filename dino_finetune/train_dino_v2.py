@@ -919,6 +919,7 @@ def main():
     # -- Train --
     start_time = time.time()
     train_seconds_used = 0.0
+    last_eval_metrics = None
     for epoch in range(start_epoch, EPOCHS + 1):
         if MAX_TRAINING_SECONDS > 0 and train_seconds_used >= MAX_TRAINING_SECONDS:
             logger.info(f"Training-time budget exhausted at epoch {epoch-1} ({train_seconds_used:.1f}s)")
@@ -956,6 +957,7 @@ def main():
         # -- Eval + early stop --
         if epoch % EVAL_EVERY_N_EPOCHS == 0:
             metrics = evaluate_dino(model, val_loader, DEVICE)
+            last_eval_metrics = dict(metrics)
             current_recall = metrics["recall@1"]
             current_cosine = metrics["mean_cosine"]
 
@@ -1031,10 +1033,18 @@ def main():
     total_time = time.time() - start_time
     peak_vram_mb = torch.cuda.max_memory_allocated() / (1024 ** 2)
 
-    logger.info("Loading best v2 adapter for final eval...")
-    from prepare_dino import load_finetuned_model
-    best_model = load_finetuned_model(ADAPTER_OUTPUT_DIR, DEVICE)
-    final = evaluate_dino(best_model, val_loader, DEVICE)
+    if (
+        MAX_TRAINING_SECONDS > 0
+        and train_seconds_used >= MAX_TRAINING_SECONDS
+        and last_eval_metrics is not None
+    ):
+        logger.info("Reusing last budget-stop eval metrics as final result")
+        final = last_eval_metrics
+    else:
+        logger.info("Loading best v2 adapter for final eval...")
+        from prepare_dino import load_finetuned_model
+        best_model = load_finetuned_model(ADAPTER_OUTPUT_DIR, DEVICE)
+        final = evaluate_dino(best_model, val_loader, DEVICE)
 
     logger.info("=" * 60)
     logger.info(

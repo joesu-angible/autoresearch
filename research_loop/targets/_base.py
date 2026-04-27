@@ -61,6 +61,11 @@ V2_RESULTS_COLUMNS = (
 )
 
 
+def default_candidate_wall_grace_seconds(max_seconds: float) -> float:
+    """Bounded watchdog grace beyond the trainer's own training-time budget."""
+    return min(1800.0, max(600.0, max_seconds * 0.25))
+
+
 class TargetAdapter:
     """Base class. Subclasses set REPO_DIR, RESULTS_TSV, METRICS_JSON, TRAIN_CMD."""
 
@@ -122,7 +127,7 @@ class TargetAdapter:
             grace_env = os.environ.get("AUTORESEARCH_CANDIDATE_WALL_GRACE_SECONDS")
             wall_grace = (
                 float(grace_env) if grace_env is not None
-                else max(600.0, max_seconds * 0.25)
+                else default_candidate_wall_grace_seconds(max_seconds)
             )
             subprocess_timeout = max_seconds + wall_grace
 

@@ -86,6 +86,14 @@ def test_budget_kills_overrunning_subprocess(stub_trainer_factory, monkeypatch):
     assert elapsed < 10.0, f"budget overrun: elapsed={elapsed:.1f}s"
 
 
+def test_default_wall_grace_is_bounded_for_large_training_budgets():
+    """Default watchdog grace must not scale unbounded with very large training budgets."""
+    from research_loop.targets._base import default_candidate_wall_grace_seconds
+
+    assert default_candidate_wall_grace_seconds(600.0) == 600.0
+    assert default_candidate_wall_grace_seconds(10_000_000.0) == 1800.0
+
+
 def test_adapter_passes_full_training_budget_env_and_larger_wall_timeout(tmp_path, monkeypatch):
     """max_seconds is the trainer's own train-step budget, not the whole subprocess wall time."""
     monkeypatch.setenv("AUTORESEARCH_CANDIDATE_WALL_GRACE_SECONDS", "2")

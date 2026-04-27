@@ -73,20 +73,48 @@ def _candidate():
     )
 
 
-def test_budget_kills_overrunning_subprocess(stub_trainer_factory):
-    """3s budget on a 30s-sleep stub → killed within ~5s, status='timeout'."""
+def test_budget_kills_overrunning_subprocess(stub_trainer_factory, monkeypatch):
+    """Adapter keeps a wall-clock watchdog for trainers that ignore the env budget."""
+    monkeypatch.setenv("AUTORESEARCH_CANDIDATE_WALL_GRACE_SECONDS", "1")
     adapter = stub_trainer_factory(sleep_seconds=30, write_progress=False)
     candidate = _candidate()
     t0 = time.time()
     outcome = adapter.train(candidate, max_epochs=1, max_seconds=3.0)
     elapsed = time.time() - t0
     assert outcome.status == "timeout"
-    # Killed shortly after budget + 1s grace + small slack
+    # Killed shortly after budget + 1s grace + adapter SIGTERM grace + small slack
     assert elapsed < 10.0, f"budget overrun: elapsed={elapsed:.1f}s"
 
 
-def test_budget_recovers_partial_metrics_from_progress_json(stub_trainer_factory):
-    """Stub writes metrics_progress; adapter parses on timeout."""
+def test_adapter_passes_full_training_budget_env_and_larger_wall_timeout(tmp_path, monkeypatch):
+    """max_seconds is the trainer's own train-step budget, not the whole subprocess wall time."""
+    monkeypatch.setenv("AUTORESEARCH_CANDIDATE_WALL_GRACE_SECONDS", "2")
+    trainer = tmp_path / "fake_train.py"
+    trainer.write_text(
+        "import json, os, time\n"
+        "from pathlib import Path\n"
+        "budget = os.environ.get('MAX_TRAINING_SECONDS')\n"
+        "time.sleep(1.2)  # simulate setup outside training budget\n"
+        "out = Path(__file__).parent / 'metrics_final_v2.json'\n"
+        "out.write_text(json.dumps({'combined_metric': 0.7, 'recall_at_1': 0.6, 'mean_cosine': 0.5, 'budget': budget}))\n"
+    )
+
+    class StubAdapter(TargetAdapter):
+        name = "stub_v2"
+        REPO_DIR = tmp_path
+        RESULTS_TSV = tmp_path / "results_v2.tsv"
+        METRICS_JSON = tmp_path / "metrics_final_v2.json"
+        TRAIN_CMD = ["python", str(trainer)]
+        DEFAULT_EPOCHS = 1
+
+    outcome = StubAdapter().train(_candidate(), max_epochs=1, max_seconds=1.0)
+    assert outcome.status == "success"
+    assert json.loads((tmp_path / "metrics_final_v2.json").read_text())["budget"] == "1"
+
+
+def test_budget_recovers_partial_metrics_from_progress_json(stub_trainer_factory, monkeypatch):
+    """Stub writes metrics_progress; adapter parses on watchdog timeout."""
+    monkeypatch.setenv("AUTORESEARCH_CANDIDATE_WALL_GRACE_SECONDS", "1")
     adapter = stub_trainer_factory(sleep_seconds=30, write_progress=True)
     outcome = adapter.train(_candidate(), max_epochs=1, max_seconds=3.0)
     assert outcome.status == "timeout"
@@ -96,8 +124,9 @@ def test_budget_recovers_partial_metrics_from_progress_json(stub_trainer_factory
     assert outcome.metrics.get("recall_1") == 0.5
 
 
-def test_budget_no_progress_file_yields_empty_metrics(stub_trainer_factory):
-    """Timeout before any eval → no progress file → empty metrics dict."""
+def test_budget_no_progress_file_yields_empty_metrics(stub_trainer_factory, monkeypatch):
+    """Watchdog timeout before any eval → no progress file → empty metrics dict."""
+    monkeypatch.setenv("AUTORESEARCH_CANDIDATE_WALL_GRACE_SECONDS", "1")
     adapter = stub_trainer_factory(sleep_seconds=30, write_progress=False)
     outcome = adapter.train(_candidate(), max_epochs=1, max_seconds=2.0)
     assert outcome.status == "timeout"

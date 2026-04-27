@@ -614,7 +614,7 @@ def train_one_epoch(
     arcface_head: "ArcFaceHead | None" = None,
     base_model=None,
     productness_head: "DinoProductnessHead | None" = None,
-    deadline: float | None = None,
+    remaining_train_seconds: float | None = None,
 ) -> dict:
     """Two-view forward for SSL + main InfoNCE + optional ArcFace + optional base anchor."""
     model.train()
@@ -637,9 +637,15 @@ def train_one_epoch(
     if MAX_STEPS_PER_EPOCH > 0:
         effective_steps = min(len(train_loader), MAX_STEPS_PER_EPOCH)
 
+    train_start = time.time()
+    train_deadline = (
+        train_start + remaining_train_seconds
+        if remaining_train_seconds is not None else None
+    )
+
     for step, batch in enumerate(train_loader):
-        if deadline is not None and time.time() >= deadline:
-            logger.info(f"Time budget reached during epoch {epoch} at step {step}; stopping for eval")
+        if train_deadline is not None and time.time() >= train_deadline:
+            logger.info(f"Training-time budget reached during epoch {epoch} at step {step}; stopping for eval")
             break
         if MAX_STEPS_PER_EPOCH > 0 and step >= MAX_STEPS_PER_EPOCH:
             break
@@ -778,6 +784,7 @@ def train_one_epoch(
         "productness_pos_acc": (productness_pos_correct / productness_pos_total) if productness_pos_total > 0 else 0.0,
         "productness_neg_acc": (productness_neg_correct / productness_neg_total) if productness_neg_total > 0 else 0.0,
         "productness_n": _prod_n,
+        "train_seconds": time.time() - train_start,
     }
 
 
@@ -911,11 +918,10 @@ def main():
 
     # -- Train --
     start_time = time.time()
-    deadline = start_time + MAX_TRAINING_SECONDS if MAX_TRAINING_SECONDS > 0 else None
+    train_seconds_used = 0.0
     for epoch in range(start_epoch, EPOCHS + 1):
-        elapsed = time.time() - start_time
-        if MAX_TRAINING_SECONDS > 0 and elapsed >= MAX_TRAINING_SECONDS:
-            logger.info(f"Time budget exhausted at epoch {epoch-1}")
+        if MAX_TRAINING_SECONDS > 0 and train_seconds_used >= MAX_TRAINING_SECONDS:
+            logger.info(f"Training-time budget exhausted at epoch {epoch-1} ({train_seconds_used:.1f}s)")
             break
 
         epoch_start = time.time()
@@ -925,8 +931,12 @@ def main():
             arcface_head=arcface_head,
             base_model=anchor_base,
             productness_head=productness_head,
-            deadline=deadline,
+            remaining_train_seconds=(
+                max(0.0, MAX_TRAINING_SECONDS - train_seconds_used)
+                if MAX_TRAINING_SECONDS > 0 else None
+            ),
         )
+        train_seconds_used += float(stats.get("train_seconds", 0.0))
         epoch_time = time.time() - epoch_start
         logger.info(
             f"Epoch {epoch}/{EPOCHS}: loss={stats['loss']:.4f} "
@@ -959,6 +969,7 @@ def main():
                 "is_partial": True,
                 "epochs_completed": int(epoch),
                 "max_epochs": int(EPOCHS),
+                "train_seconds": round(train_seconds_used, 1),
                 "combined_metric": float(metrics["combined"]),
                 "best_combined": float(max(best_combined, metrics["combined"])),
                 "recall_at_1": float(current_recall),
@@ -1047,6 +1058,7 @@ def main():
         "mean_cosine": float(final["mean_cosine"]),
         "peak_vram_mb": float(peak_vram_mb),
         "elapsed_seconds": round(total_time, 1),
+        "train_seconds": round(train_seconds_used, 1),
         "epochs_trained": int(epoch),
     }
     metrics_path = Path(ADAPTER_OUTPUT_DIR).parent / "metrics_final_v2.json"

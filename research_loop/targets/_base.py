@@ -113,14 +113,18 @@ class TargetAdapter:
         cmd += ["--max-epochs", str(epochs)]
 
         env = os.environ.copy()
+        subprocess_timeout = max_seconds
         if max_seconds is not None:
-            # Give the trainer an internal graceful deadline before the outer
-            # subprocess timeout. This lets long-running candidates stop,
-            # evaluate, and write metrics_final_v2.json instead of being killed
-            # as unusable timeouts.
-            eval_grace = min(600.0, max(120.0, max_seconds * 0.15))
-            graceful_budget = max(1, int(max_seconds - eval_grace))
-            env.setdefault("MAX_TRAINING_SECONDS", str(graceful_budget))
+            # max_seconds is the trainer's internal train-step budget, not the
+            # total subprocess wall clock. Setup, imports, dataloader creation,
+            # final eval, and metrics writing get extra watchdog grace here.
+            env.setdefault("MAX_TRAINING_SECONDS", str(max(1, int(max_seconds))))
+            grace_env = os.environ.get("AUTORESEARCH_CANDIDATE_WALL_GRACE_SECONDS")
+            wall_grace = (
+                float(grace_env) if grace_env is not None
+                else max(600.0, max_seconds * 0.25)
+            )
+            subprocess_timeout = max_seconds + wall_grace
 
         if dry_run:
             return TrainOutcome(
@@ -145,7 +149,7 @@ class TargetAdapter:
                 env=env,
             )
             try:
-                proc.wait(timeout=max_seconds)
+                proc.wait(timeout=subprocess_timeout)
             except subprocess.TimeoutExpired:
                 timed_out = True
                 proc.terminate()

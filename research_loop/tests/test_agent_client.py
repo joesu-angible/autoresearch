@@ -148,6 +148,27 @@ def test_codex_call_uses_combined_prompt_and_config_override(mock_run):
     assert "user text" in last
 
 
+@patch("research_loop.agents.client.subprocess.run")
+def test_codex_edit_files_uses_yolo_not_bwrap_sandbox(mock_run, tmp_path):
+    mock_run.return_value = _ok("edited\n")
+    client = CodexCliClient(model="gpt-5.5")
+    out = client.edit_files("system text", "user text", workdir=tmp_path)
+
+    assert out == "edited"
+    cmd = mock_run.call_args.args[0]
+    assert cmd[:2] == ["codex", "exec"]
+    assert "-C" in cmd and str(tmp_path) == cmd[cmd.index("-C") + 1]
+    assert "--yolo" in cmd
+    assert "--sandbox" not in cmd
+    assert "workspace-write" not in cmd
+    assert "--full-auto" not in cmd
+    assert "-c" in cmd and "model=gpt-5.5" == cmd[cmd.index("-c") + 1]
+    last = cmd[-1]
+    assert "system text" in last
+    assert "user text" in last
+    assert mock_run.call_args.kwargs.get("cwd") is None
+
+
 # ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------

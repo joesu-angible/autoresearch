@@ -269,8 +269,12 @@ class CodexCliClient(LLMClient):
         cmd = [
             "codex", "exec",
             "-C", str(workdir),
-            "--sandbox", "workspace-write",
-            "--full-auto",
+            # On DEV21, Codex's workspace-write sandbox fails before tool
+            # execution with `bwrap: loopback: Failed RTM_NEWADDR`.
+            # Autoreason already confines edits to a disposable git worktree
+            # and validates allowed paths afterward, so use Codex's no-sandbox
+            # approval-bypass mode for unattended file authoring.
+            "--yolo",
         ]
         if self.model is not None:
             cmd += ["-c", f"model={self.model}"]

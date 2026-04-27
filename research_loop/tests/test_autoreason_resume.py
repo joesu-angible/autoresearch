@@ -99,7 +99,18 @@ def _mock_factory():
             if "conservative synthesis" in s:
                 return SYNTH_RAW
             raise AssertionError(f"Unrecognized system prompt: {system[:80]}")
+        def edit_files_fn(system, user, *, workdir, timeout=None):
+            s = system.lower()
+            path = workdir / "student_finetune" / "train_v2.py"
+            if "produce a unified diff that addresses" in s:
+                path.write_text("# stub-v2\n")
+                return "stub author edit"
+            if "conservative synthesis" in s:
+                path.write_text("# stub-ab\n")
+                return "stub synthesis edit"
+            raise AssertionError(f"Unrecognized editing prompt: {system[:80]}")
         client.call.side_effect = call_fn
+        client.edit_files.side_effect = edit_files_fn
         client.name = f"mock-{role}"
         return client
     return make_client
@@ -372,15 +383,16 @@ def test_resume_when_outcomes_done_but_no_decision_runs_promote(
     assert decisions[0].round_id == rid
 
 
-def test_mid_apply_failure_writes_failed_outcome_and_continues(
+def test_worktree_authoring_drops_malformed_text_diff_and_runs_incumbent(
     history_in_tmp, runs_dir_in_tmp, fake_repo, monkeypatch
 ):
-    """LLM produces a malformed diff: git apply --check fails. cmd_autoreason
-    must record status='failed' and move on — NOT write outcome_started (which
-    would make resume try to re-apply the same broken patch forever)."""
+    """Worktree authoring no longer trusts hand-written malformed diff text.
+    If an editing client only returns bad diff text but makes no file changes,
+    git diff is empty, so autoreason runs only incumbent A instead of creating
+    broken B/AB candidates.
+    """
     from research_loop.targets.student_v2 import StudentV2Target
 
-    # Override Author B and Synthesizer to emit BAD diffs (won't apply)
     bad_diff_raw = """RATIONALE: stub.
 
 ```diff
@@ -399,14 +411,15 @@ def test_mid_apply_failure_writes_failed_outcome_and_continues(
                 s = system.lower()
                 if "identify concrete problems" in s:
                     return CRITIC_RAW
-                # Both Author B and Synthesizer emit non-applying diffs
+                return bad_diff_raw
+            def edit_files_fn(system, user, *, workdir, timeout=None):
                 return bad_diff_raw
             client.call.side_effect = call_fn
+            client.edit_files.side_effect = edit_files_fn
             client.name = f"mock-{role}"
             return client
         return make_client
 
-    # A succeeds; B and AB never reach train() because their patches reject
     a_metrics = {"combined": 0.86, "recall_1": 0.90, "mean_cosine": 0.81,
                  "productness_neg_acc": 0.85, "productness_pos_acc": 0.99}
     _patch_train(StudentV2Target, monkeypatch, [{"status": "success", "metrics": a_metrics}])
@@ -419,24 +432,17 @@ def test_mid_apply_failure_writes_failed_outcome_and_continues(
         hypothesis_seed="bad-patch", dry_run=False,
         agent_client_factory=bad_factory(),
     )
-    assert rc in (0, 1)  # may converge (A wins by default) or hit max_passes
+    assert rc in (0, 1)
 
     outcomes = list(read_outcomes(history_in_tmp))
     started = list(read_outcomes_started(history_in_tmp))
 
-    # All 3 candidates emitted outcomes
-    assert len(outcomes) == 3
-    statuses = {o.candidate_id: o.status for o in outcomes}
-    # 1 success (A), 2 failed (B, AB)
-    assert sum(1 for s in statuses.values() if s == "success") == 1
-    assert sum(1 for s in statuses.values() if s == "failed") == 2
-
-    # Only A has outcome_started — B and AB were rejected at apply --check
+    assert len(outcomes) == 1
+    assert outcomes[0].status == "success"
     assert len(started) == 1
     assert started[0].kind == "A"
 
-    # No unfinished
-    assert find_unfinished_candidates(history_in_tmp, run_id=started[0].run_id) == []
+    assert find_unfinished_candidates(history_in_tmp, run_id=None) == []
 
     # Working tree clean
     res = subprocess.run(["git", "status", "--porcelain"], cwd=fake_repo,

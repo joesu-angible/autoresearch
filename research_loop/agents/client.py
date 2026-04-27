@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import subprocess
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Literal
 
 LlmCliName = Literal["hermes", "claude", "codex"]
@@ -70,12 +71,29 @@ class LLMClient(ABC):
     ) -> str:
         """Return the assistant text. May raise RuntimeError on CLI failure."""
 
+    def edit_files(
+        self,
+        system: str,
+        user: str,
+        *,
+        workdir: Path,
+        timeout: float | None = None,
+    ) -> str:
+        """Run an agentic editing session in workdir.
 
-def _run(cmd: list[str], *, timeout: float, stdin: str | None = None) -> str:
+        Subclasses override this when their CLI can safely edit files. Keeping
+        this separate from call() preserves single-shot text calls for critic
+        and other non-mutating roles.
+        """
+        raise NotImplementedError(f"{self.name} client does not support file-edit authoring")
+
+
+def _run(cmd: list[str], *, timeout: float, stdin: str | None = None, cwd: Path | None = None) -> str:
     """Run a subprocess; return stdout; raise RuntimeError with full context on failure."""
     try:
         proc = subprocess.run(
             cmd,
+            cwd=cwd,
             input=stdin,
             capture_output=True,
             text=True,
@@ -132,6 +150,30 @@ class HermesCliClient(LLMClient):
             cmd += ["--provider", self.provider]
         return _run(cmd, timeout=timeout or DEFAULT_CALL_TIMEOUT_SECONDS).strip()
 
+    def edit_files(
+        self,
+        system: str,
+        user: str,
+        *,
+        workdir: Path,
+        timeout: float | None = None,
+    ) -> str:
+        prompt = _combine_prompt(system, user)
+        cmd = [
+            "hermes", "chat",
+            "-q", prompt,
+            "--yolo",
+            "--max-turns", "40",
+            "--ignore-rules",
+            "-Q",
+            "-t", "file,terminal",
+        ]
+        if self.model is not None:
+            cmd += ["-m", self.model]
+        if self.provider:
+            cmd += ["--provider", self.provider]
+        return _run(cmd, timeout=timeout or DEFAULT_CALL_TIMEOUT_SECONDS, cwd=workdir).strip()
+
 
 class ClaudeCliClient(LLMClient):
     """`claude -p ... --system-prompt ...`.
@@ -166,6 +208,25 @@ class ClaudeCliClient(LLMClient):
             cmd += ["--model", self.model]
         return _run(cmd, timeout=timeout or DEFAULT_CALL_TIMEOUT_SECONDS).strip()
 
+    def edit_files(
+        self,
+        system: str,
+        user: str,
+        *,
+        workdir: Path,
+        timeout: float | None = None,
+    ) -> str:
+        cmd = [
+            "claude",
+            "-p", user,
+            "--system-prompt", system,
+            "--bare",
+            "--dangerously-skip-permissions",
+        ]
+        if self.model is not None:
+            cmd += ["--model", self.model]
+        return _run(cmd, timeout=timeout or DEFAULT_CALL_TIMEOUT_SECONDS, cwd=workdir).strip()
+
 
 class CodexCliClient(LLMClient):
     """`codex exec [PROMPT] [--config model=NAME]`.
@@ -191,6 +252,26 @@ class CodexCliClient(LLMClient):
     ) -> str:
         prompt = _combine_prompt(system, user)
         cmd = ["codex", "exec"]
+        if self.model is not None:
+            cmd += ["-c", f"model={self.model}"]
+        cmd += [prompt]
+        return _run(cmd, timeout=timeout or DEFAULT_CALL_TIMEOUT_SECONDS).strip()
+
+    def edit_files(
+        self,
+        system: str,
+        user: str,
+        *,
+        workdir: Path,
+        timeout: float | None = None,
+    ) -> str:
+        prompt = _combine_prompt(system, user)
+        cmd = [
+            "codex", "exec",
+            "-C", str(workdir),
+            "--sandbox", "workspace-write",
+            "--full-auto",
+        ]
         if self.model is not None:
             cmd += ["-c", f"model={self.model}"]
         cmd += [prompt]

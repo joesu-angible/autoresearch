@@ -621,13 +621,13 @@ def cmd_autoreason(
         print(f"  {role:12s} → {getattr(c, 'name', type(c).__name__)}"
               + (f" model={model}" if model else ""))
 
-    from research_loop.agents.author import AuthorBAgent
     from research_loop.agents.critic import CriticAgent
-    from research_loop.agents.synthesizer import SynthesizerAgent
+    from research_loop.agents.worktree_authoring import (
+        author_diff_in_worktree,
+        synthesize_diff_in_worktree,
+    )
 
     critic = CriticAgent(critic_client)
-    author = AuthorBAgent(author_client)
-    synthesizer = SynthesizerAgent(synthesizer_client)
 
     # Run-level state for the status surface (Slice 1 of T9)
     import datetime
@@ -830,7 +830,9 @@ def cmd_autoreason(
         print(f"  critic: {len(critique.problems)} problem(s) found")
 
         # 2. Author B
-        b_proposal = author.author(
+        b_proposal = author_diff_in_worktree(
+            author_client,
+            repo_root=REPO_ROOT,
             trainer_source=trainer_source,
             trainer_path=trainer_path,
             critique_text=critique.raw,
@@ -838,8 +840,11 @@ def cmd_autoreason(
         b_proposal = _drop_bad_proposal_diff("author", b_proposal)
 
         # 3. Synthesizer (sees only patches, anonymized labels)
-        ab_synthesis = synthesizer.synthesize(
-            patch_x="", patch_y=b_proposal.diff,  # X=A=empty (do-nothing); Y=B
+        ab_synthesis = synthesize_diff_in_worktree(
+            synthesizer_client,
+            repo_root=REPO_ROOT,
+            patch_x="",
+            patch_y=b_proposal.diff,  # X=A=empty (do-nothing); Y=B
             trainer_path=trainer_path,
         )
         ab_synthesis = _drop_bad_proposal_diff("synthesizer", ab_synthesis)

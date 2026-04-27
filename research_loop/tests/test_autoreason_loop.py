@@ -106,7 +106,21 @@ def _mock_agent_client_factory():
             if "conservative synthesis" in s:
                 return SYNTH_RAW
             raise AssertionError(f"Unrecognized system prompt: {system[:80]}")
+        def edit_files_fn(system, user, *, workdir, timeout=None):
+            s = system.lower()
+            if "produce a unified diff that addresses" in s or "conservative synthesis" in s:
+                path = workdir / "student_finetune" / "train_v2.py"
+                text = path.read_text()
+                if "# autoreason-test marker" not in text:
+                    text = text.replace(
+                        "PRODUCTNESS_CLS_WEIGHT = 0.02\n",
+                        "# autoreason-test marker\nPRODUCTNESS_CLS_WEIGHT = 0.02\n",
+                    )
+                    path.write_text(text)
+                return "Changed train_v2.py for test."
+            raise AssertionError(f"Unrecognized editing prompt: {system[:80]}")
         client.call.side_effect = call_fn
+        client.edit_files.side_effect = edit_files_fn
         client.name = f"mock-{role}"
         return client
     return make_client

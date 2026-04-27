@@ -131,11 +131,11 @@ ARCFACE_SCALE = 30.0
 ARCFACE_MARGIN = 0.3
 ARCFACE_PHASEOUT_EPOCH = 5           # Linear decay 0 → weight by this epoch
 
-USE_SSL_CONSISTENCY = True
+USE_SSL_CONSISTENCY = False
 SSL_WEIGHT = 0.3
 
 USE_NEGATIVES_MASKED_NCE = True      # If False: negatives are ignored entirely
-USE_STRONG_AUG = True
+USE_STRONG_AUG = False
 USE_BASE_ANCHOR = False
 BASE_ANCHOR_WEIGHT = 0.1
 
